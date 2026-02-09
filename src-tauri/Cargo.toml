@@ -1,0 +1,25 @@
+[package]
+name = "paste_app"
+version = "0.0.1"
+description = "Clipboard history manager"
+authors = ["you"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "macros"] }
+arboard = "3"
+regex = "1"
+image = "0.25"
+base64 = "0.22"
+tokio = { version = "1", features = ["time"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

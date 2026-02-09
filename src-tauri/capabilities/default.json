@@ -1,0 +1,10 @@
+{
+  "identifier": "main-capability",
+  "description": "Allow main window to use core APIs and listen to events.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:event:allow-listen"
+  ]
+}
