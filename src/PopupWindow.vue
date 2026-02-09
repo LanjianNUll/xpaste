@@ -3,9 +3,8 @@ import { ref, onMounted, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { ClipboardItem, DateRangeType, DateRange } from "@/types";
-import { fetchHistoryByDate, setClipboard } from "@/services/api";
+import { fetchHistoryByDate, setClipboardAndPaste } from "@/services/api";
 
-const query = ref("");
 const items = ref<ClipboardItem[]>([]);
 const loading = ref(false);
 const activeDate = ref<DateRangeType>("today");
@@ -63,7 +62,7 @@ async function loadHistory() {
   loading.value = true;
   try {
     const range = getDateRange(activeDate.value);
-    const data = await fetchHistoryByDate(range.startTs, range.endTs, query.value);
+    const data = await fetchHistoryByDate(range.startTs, range.endTs, '');
     items.value = data;
   } catch (err) {
     ElMessage.error("加载历史失败，请稍后重试。");
@@ -83,11 +82,15 @@ function scheduleLoad() {
 
 async function handleItemClick(item: ClipboardItem) {
   try {
-    await setClipboard(item.id);
-    ElMessage.success("已写入剪贴板，可直接粘贴。");
-    // 关闭窗口
+    // 先隐藏窗口，让焦点回到原输入框
     const appWindow = getCurrentWebviewWindow();
     await appWindow.hide();
+    
+    // 等待一小段时间确保窗口已隐藏
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // 然后写入剪贴板并模拟粘贴
+    await setClipboardAndPaste(item.id);
   } catch (err) {
     ElMessage.error("写入剪贴板失败。");
   }
@@ -151,9 +154,19 @@ onMounted(async () => {
   } catch (err) {
     console.error("Failed to setup blur listener", err);
   }
+  
+  // 拦截关闭事件，改为隐藏窗口
+  try {
+    const appWindow = getCurrentWebviewWindow();
+    await appWindow.onCloseRequested((event) => {
+      event.preventDefault();
+      appWindow.hide();
+    });
+  } catch (err) {
+    console.error("Failed to setup close listener", err);
+  }
 });
 
-watch(query, scheduleLoad);
 watch(customDate, () => {
   if (activeDate.value === "custom") {
     loadHistory();
@@ -163,15 +176,6 @@ watch(customDate, () => {
 
 <template>
   <div class="popup-shell">
-    <div class="popup-header">
-      <el-input
-        v-model="query"
-        placeholder="搜索..."
-        clearable
-        size="small"
-      />
-    </div>
-    
     <div class="date-tabs">
       <el-tabs v-model="activeDate" @tab-change="handleDateChange" size="small">
         <el-tab-pane label="今天" name="today" />
@@ -203,7 +207,7 @@ watch(customDate, () => {
         <div v-if="item.format === 'image'" class="history-image-preview">
           <img :src="imageSrc(item)" class="thumbnail" alt="预览" />
         </div>
-        <div v-else class="history-preview" v-html="highlightText(shortPreview(item), query)" />
+        <div v-else class="history-preview" v-html="highlightText(shortPreview(item), '')" />
       </div>
       <el-empty v-if="!loading && items.length === 0" description="暂无记录" />
     </div>

@@ -36,6 +36,14 @@ export async function setClipboard(id: number): Promise<void> {
   }
 }
 
+export async function setClipboardAndPaste(id: number): Promise<void> {
+  try {
+    await invoke<void>("set_clipboard_and_paste", { id });
+  } catch {
+    // ignore in web context
+  }
+}
+
 export async function getCursorPosition(): Promise<{ x: number; y: number }> {
   try {
     const [x, y] = await invoke<[number, number]>("get_cursor_position");

@@ -54,6 +54,96 @@ async fn set_clipboard(state: State<'_, AppState>, id: i64) -> Result<(), String
   write_to_clipboard(row).map_err(|err| err.to_string())
 }
 
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn set_clipboard_and_paste(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+  use windows::Win32::UI::Input::KeyboardAndMouse::{
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V
+  };
+  
+  // 先写入剪贴板
+  let row = db::get_item(&state.db, id)
+    .await
+    .map_err(|err| err.to_string())?
+    .ok_or_else(|| "记录不存在".to_string())?;
+  
+  write_to_clipboard(row).map_err(|err| err.to_string())?;
+  
+  // 等待剪贴板写入完成
+  tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+  
+  // 模拟 Ctrl+V 按键
+  unsafe {
+    let inputs = [
+      // 按下 Ctrl
+      INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+          ki: KEYBDINPUT {
+            wVk: VK_CONTROL,
+            wScan: 0,
+            dwFlags: Default::default(),
+            time: 0,
+            dwExtraInfo: 0,
+          },
+        },
+      },
+      // 按下 V
+      INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+          ki: KEYBDINPUT {
+            wVk: VK_V,
+            wScan: 0,
+            dwFlags: Default::default(),
+            time: 0,
+            dwExtraInfo: 0,
+          },
+        },
+      },
+      // 释放 V
+      INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+          ki: KEYBDINPUT {
+            wVk: VK_V,
+            wScan: 0,
+            dwFlags: KEYEVENTF_KEYUP,
+            time: 0,
+            dwExtraInfo: 0,
+          },
+        },
+      },
+      // 释放 Ctrl
+      INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+          ki: KEYBDINPUT {
+            wVk: VK_CONTROL,
+            wScan: 0,
+            dwFlags: KEYEVENTF_KEYUP,
+            time: 0,
+            dwExtraInfo: 0,
+          },
+        },
+      },
+    ];
+    
+    let result = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    if result == 0 {
+      return Err("模拟按键失败".to_string());
+    }
+  }
+  
+  Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+async fn set_clipboard_and_paste(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+  set_clipboard(state, id).await
+}
+
 #[tauri::command]
 async fn list_history_by_date(
   state: State<'_, AppState>,
@@ -169,39 +259,67 @@ fn main() {
               #[cfg(target_os = "windows")]
               {
                 use windows::Win32::Foundation::POINT;
-                use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+                use windows::Win32::Graphics::Gdi::{MonitorFromPoint, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+                use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
                 
                 let (x, y) = unsafe {
                   let mut point = POINT { x: 0, y: 0 };
                   if GetCursorPos(&mut point).is_ok() {
-                    let screen_width = GetSystemMetrics(SM_CXSCREEN);
-                    let screen_height = GetSystemMetrics(SM_CYSCREEN);
+                    // 获取光标所在的显示器信息
+                    let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+                    let mut monitor_info = MONITORINFO {
+                      cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                      ..Default::default()
+                    };
                     
-                    // 窗口尺寸
-                    let window_width = 360;
-                    let window_height = 500;
-                    
-                    // 计算位置，确保窗口在屏幕内
-                    let mut final_x = point.x + 10;
-                    let mut final_y = point.y + 10;
-                    
-                    // 如果右侧超出屏幕，向左调整
-                    if final_x + window_width > screen_width {
-                      final_x = screen_width - window_width - 10;
-                      if final_x < 0 {
-                        final_x = 0;
+                    if GetMonitorInfoW(monitor, &mut monitor_info).as_bool() {
+                      let work_area = monitor_info.rcWork;
+                      let screen_left = work_area.left;
+                      let screen_top = work_area.top;
+                      
+                      // 窗口尺寸（包含边框）
+                      let window_width = 360;
+                      let window_height = 500;
+                      
+                      // 计算初始位置（光标右下方）
+                      let mut final_x = point.x + 10;
+                      let mut final_y = point.y + 10;
+                      
+                      // 检查右边界
+                      if final_x + window_width > work_area.right {
+                        // 放在光标左侧
+                        final_x = point.x - window_width - 10;
+                        // 如果左侧也放不下，紧贴右边界
+                        if final_x < screen_left {
+                          final_x = work_area.right - window_width;
+                        }
                       }
-                    }
-                    
-                    // 如果底部超出屏幕，向上调整
-                    if final_y + window_height > screen_height {
-                      final_y = screen_height - window_height - 10;
-                      if final_y < 0 {
-                        final_y = 0;
+                      
+                      // 检查底边界
+                      if final_y + window_height > work_area.bottom {
+                        // 放在光标上方
+                        final_y = point.y - window_height - 10;
+                        // 如果上方也放不下，紧贴底边界
+                        if final_y < screen_top {
+                          final_y = work_area.bottom - window_height;
+                        }
                       }
+                      
+                      // 确保不超出左边界
+                      if final_x < screen_left {
+                        final_x = screen_left;
+                      }
+                      
+                      // 确保不超出顶边界
+                      if final_y < screen_top {
+                        final_y = screen_top;
+                      }
+                      
+                      (final_x, final_y)
+                    } else {
+                      // 如果无法获取显示器信息，使用简单的偏移
+                      (point.x + 10, point.y + 10)
                     }
-                    
-                    (final_x, final_y)
                   } else {
                     (100, 100)
                   }
@@ -212,7 +330,8 @@ fn main() {
               }
               
               let _ = window.show();
-              let _ = window.set_focus();
+              // 不设置焦点，避免抢夺原输入框的焦点
+              // let _ = window.set_focus();
             }
           });
         });
@@ -224,6 +343,7 @@ fn main() {
       list_history,
       search_history,
       set_clipboard,
+      set_clipboard_and_paste,
       list_history_by_date,
       search_history_by_date,
       get_cursor_position
