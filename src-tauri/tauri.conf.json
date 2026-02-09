@@ -39,7 +39,8 @@
     "trayIcon": {
       "iconPath": "icons/icon.png",
       "tooltip": "Xpaste",
-      "menuOnLeftClick": false
+      "menuOnLeftClick": false,
+      "iconAsTemplate": false
     }
   },
   "bundle": {

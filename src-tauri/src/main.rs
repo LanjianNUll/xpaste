@@ -325,46 +325,65 @@ fn main() {
       clipboard::start_watcher(handle.clone(), pool);
       
       // 设置系统托盘菜单
-      use tauri::{menu::{Menu, MenuItem}, tray::TrayIconBuilder};
+      use tauri::{menu::{Menu, MenuItem, PredefinedMenuItem}, tray::TrayIconBuilder};
       
       let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-      let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-      let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+      let separator = PredefinedMenuItem::separator(app)?;
+      let quit_item = MenuItem::with_id(app, "quit", "退出应用", true, None::<&str>)?;
+      let menu = Menu::with_items(app, &[&show_item, &separator, &quit_item])?;
       
       let app_handle_for_click = app.handle().clone();
-      let _tray = TrayIconBuilder::with_id("main")
+      let app_handle_for_menu = app.handle().clone();
+      
+      let tray = TrayIconBuilder::with_id("main")
+        .tooltip("Xpaste")
+        .icon(app.default_window_icon().unwrap().clone())
         .menu(&menu)
-        .on_menu_event(move |app, event| {
+        .on_menu_event(move |_app, event| {
+          println!("Tray menu event: {:?}", event.id);
           match event.id.as_ref() {
             "show" => {
-              if let Some(window) = app.get_webview_window("main") {
+              println!("Menu: Show main window");
+              if let Some(window) = app_handle_for_menu.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
               }
             }
             "quit" => {
-              app.exit(0);
+              println!("Menu: Quit application");
+              std::process::exit(0);
             }
             _ => {}
           }
         })
-        .on_tray_icon_event(move |_tray, event| {
-          println!("Tray event: {:?}", event);
-          if let tauri::tray::TrayIconEvent::Click { button, .. } = event {
-            println!("Tray clicked, button: {:?}", button);
-            if button == tauri::tray::MouseButton::Left {
-              println!("Tray icon left clicked-----------------------------");
+        .on_tray_icon_event(move |tray, event| {
+          println!("Tray icon event: {:?}", event);
+          match event {
+            tauri::tray::TrayIconEvent::Click {
+              button: tauri::tray::MouseButton::Left,
+              .. 
+            } => {
+              println!("Tray icon left clicked");
               if let Some(window) = app_handle_for_click.get_webview_window("main") {
-                println!("Found main window, showing...");
+                println!("Showing main window");
                 let _ = window.show();
                 let _ = window.set_focus();
-              } else {
-                println!("Main window not found!");
               }
             }
+            tauri::tray::TrayIconEvent::Click {
+              button: tauri::tray::MouseButton::Right,
+              ..
+            } => {
+              println!("Tray icon right clicked - menu should appear");
+              // 在某些系统上，右键会自动显示菜单
+              // 如果不自动显示，可以尝试手动触发
+            }
+            _ => {}
           }
         })
         .build(app)?;
+      
+      println!("Tray icon created successfully with ID: {:?}", tray.id());
       
       // 主窗口关闭事件处理：隐藏而不是退出
       if let Some(main_window) = app.get_webview_window("main") {
