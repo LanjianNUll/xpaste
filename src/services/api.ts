@@ -76,7 +76,7 @@ function mockHistory(): ClipboardItem[] {
       id: 1,
       format: "text",
       category: "text",
-      text: "欢迎使用 Paste App：这里会显示剪贴板历史。",
+      text: "欢迎使用 Xpaste：这里会显示剪贴板历史。",
       createdAt: now - 1000 * 60
     },
     {

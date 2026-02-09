@@ -225,7 +225,7 @@ watch(customDate, () => {
 <template>
   <div class="app-shell">
     <div class="toolbar">
-      <div class="toolbar-title">Paste App</div>
+      <div class="toolbar-title">Xpaste</div>
       <el-input
         v-model="query"
         placeholder="搜索剪贴板历史..."

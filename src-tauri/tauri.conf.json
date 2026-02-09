@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/schema.json",
-  "productName": "Paste App",
+  "productName": "Xpaste",
   "version": "0.0.1",
   "identifier": "com.paste.app",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Paste App",
+        "title": "Xpaste",
         "width": 980,
         "height": 720,
         "resizable": true,
@@ -38,7 +38,7 @@
     },
     "trayIcon": {
       "iconPath": "icons/icon.png",
-      "tooltip": "Paste App",
+      "tooltip": "Xpaste",
       "menuOnLeftClick": false
     }
   },
