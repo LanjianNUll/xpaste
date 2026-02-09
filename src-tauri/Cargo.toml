@@ -23,3 +23,14 @@ windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Graphics_Gd
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+# Windows 发布配置：隐藏控制台窗口
+[[bin]]
+name = "paste_app"
+path = "src/main.rs"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
