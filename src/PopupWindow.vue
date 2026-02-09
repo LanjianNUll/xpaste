@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from "vue";
+import { ref, onMounted, onBeforeUnmount, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { listen } from "@tauri-apps/api/event";
 import type { ClipboardItem, DateRangeType, DateRange } from "@/types";
 import { fetchHistoryByDate, setClipboardAndPaste } from "@/services/api";
 
@@ -26,6 +27,7 @@ const formatLabel: Record<ClipboardItem["format"], string> = {
 };
 
 const debounceHandle = ref<number | null>(null);
+const unlistenHandle = ref<(() => void) | null>(null);
 
 function getDateRange(type: DateRangeType): DateRange {
   const now = new Date();
@@ -145,6 +147,18 @@ function imageSrc(item: ClipboardItem) {
 onMounted(async () => {
   await loadHistory();
   
+  // 监听剪贴板更新事件
+  try {
+    const unlisten = await listen("clipboard://updated", () => {
+      console.log("PopupWindow: clipboard://updated event received");
+      loadHistory();
+    });
+    unlistenHandle.value = unlisten;
+    console.log("PopupWindow: clipboard://updated listener registered");
+  } catch (err) {
+    console.error("PopupWindow: clipboard://updated listener failed", err);
+  }
+  
   const appWindow = getCurrentWebviewWindow();
   
   // 监听窗口失焦事件 - 使用 blur 事件
@@ -154,6 +168,12 @@ onMounted(async () => {
     });
   } catch (err) {
     console.error("Failed to setup blur listener", err);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (unlistenHandle.value) {
+    unlistenHandle.value();
   }
 });
 
