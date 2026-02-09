@@ -11,6 +11,59 @@ use tauri::{Manager, State};
 
 use crate::models::{ClipboardItem, ClipboardItemRow};
 
+fn parse_hotkey(hotkey: &str) -> (Option<tauri_plugin_global_shortcut::Modifiers>, tauri_plugin_global_shortcut::Code) {
+  use tauri_plugin_global_shortcut::{Code, Modifiers};
+  
+  let parts: Vec<&str> = hotkey.split('+').map(|s| s.trim()).collect();
+  let mut modifiers_flags = Modifiers::empty();
+  let mut key = Code::KeyV; // 默认
+  
+  for part in &parts {
+    match part.to_uppercase().as_str() {
+      "CTRL" | "CONTROL" => modifiers_flags |= Modifiers::CONTROL,
+      "ALT" => modifiers_flags |= Modifiers::ALT,
+      "SHIFT" => modifiers_flags |= Modifiers::SHIFT,
+      "SUPER" | "WIN" | "CMD" => modifiers_flags |= Modifiers::SUPER,
+      // 字母键
+      "A" => key = Code::KeyA,
+      "B" => key = Code::KeyB,
+      "C" => key = Code::KeyC,
+      "D" => key = Code::KeyD,
+      "E" => key = Code::KeyE,
+      "F" => key = Code::KeyF,
+      "G" => key = Code::KeyG,
+      "H" => key = Code::KeyH,
+      "I" => key = Code::KeyI,
+      "J" => key = Code::KeyJ,
+      "K" => key = Code::KeyK,
+      "L" => key = Code::KeyL,
+      "M" => key = Code::KeyM,
+      "N" => key = Code::KeyN,
+      "O" => key = Code::KeyO,
+      "P" => key = Code::KeyP,
+      "Q" => key = Code::KeyQ,
+      "R" => key = Code::KeyR,
+      "S" => key = Code::KeyS,
+      "T" => key = Code::KeyT,
+      "U" => key = Code::KeyU,
+      "V" => key = Code::KeyV,
+      "W" => key = Code::KeyW,
+      "X" => key = Code::KeyX,
+      "Y" => key = Code::KeyY,
+      "Z" => key = Code::KeyZ,
+      _ => {}
+    }
+  }
+  
+  let modifiers = if modifiers_flags.is_empty() {
+    None
+  } else {
+    Some(modifiers_flags)
+  };
+  
+  (modifiers, key)
+}
+
 struct AppState {
   db: SqlitePool,
 }
@@ -196,6 +249,30 @@ async fn get_cursor_position() -> Result<(i32, i32), String> {
   Ok((0, 0))
 }
 
+#[tauri::command]
+async fn get_hotkey(app: tauri::AppHandle) -> Result<String, String> {
+  // 从配置文件读取快捷键，如果不存在则返回默认值
+  let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+  let config_file = config_dir.join("hotkey.txt");
+  
+  if config_file.exists() {
+    std::fs::read_to_string(config_file).map_err(|e| e.to_string())
+  } else {
+    Ok("Alt+V".to_string())
+  }
+}
+
+#[tauri::command]
+async fn set_hotkey(app: tauri::AppHandle, hotkey: String) -> Result<(), String> {
+  // 保存快捷键到配置文件
+  let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+  std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
+  let config_file = config_dir.join("hotkey.txt");
+  
+  std::fs::write(config_file, hotkey).map_err(|e| e.to_string())?;
+  Ok(())
+}
+
 fn write_to_clipboard(row: ClipboardItemRow) -> Result<(), arboard::Error> {
   let mut clipboard = arboard::Clipboard::new()?;
   match row.format.as_str() {
@@ -242,14 +319,90 @@ fn main() {
       let pool = tauri::async_runtime::block_on(db::init_db(&db_path))?;
       app.manage(AppState { db: pool.clone() });
       let handle = app.handle().clone();
-      clipboard::start_watcher(handle, pool);
+      clipboard::start_watcher(handle.clone(), pool);
       
-      // 注册全局快捷键 Alt+V
+      // 设置系统托盘菜单
+      use tauri::{menu::{Menu, MenuItem}, tray::TrayIconBuilder};
+      
+      let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+      let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+      let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+      
+      let app_handle_for_click = app.handle().clone();
+      let _tray = TrayIconBuilder::with_id("main")
+        .menu(&menu)
+        .on_menu_event(move |app, event| {
+          match event.id.as_ref() {
+            "show" => {
+              if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+              }
+            }
+            "quit" => {
+              app.exit(0);
+            }
+            _ => {}
+          }
+        })
+        .on_tray_icon_event(move |_tray, event| {
+          println!("Tray event: {:?}", event);
+          if let tauri::tray::TrayIconEvent::Click { button, .. } = event {
+            println!("Tray clicked, button: {:?}", button);
+            if button == tauri::tray::MouseButton::Left {
+              println!("Tray icon left clicked-----------------------------");
+              if let Some(window) = app_handle_for_click.get_webview_window("main") {
+                println!("Found main window, showing...");
+                let _ = window.show();
+                let _ = window.set_focus();
+              } else {
+                println!("Main window not found!");
+              }
+            }
+          }
+        })
+        .build(app)?;
+      
+      // 主窗口关闭事件处理：隐藏而不是退出
+      if let Some(main_window) = app.get_webview_window("main") {
+        let window = main_window.clone();
+        let _ = main_window.on_window_event(move |event| {
+          if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = window.hide();
+          }
+        });
+      }
+      
+      // Popup窗口关闭事件处理：隐藏而不是销毁
+      if let Some(popup_window) = app.get_webview_window("popup") {
+        let window = popup_window.clone();
+        let _ = popup_window.on_window_event(move |event| {
+          if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            println!("Popup close requested, hiding instead");
+            api.prevent_close();
+            let _ = window.hide();
+          }
+        });
+      }
+      
+      // 注册全局快捷键
       let app_handle = app.handle().clone();
       tauri::async_runtime::spawn(async move {
-        use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+        use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, Code, Modifiers};
         
-        let shortcut = Shortcut::new(Some(tauri_plugin_global_shortcut::Modifiers::ALT), tauri_plugin_global_shortcut::Code::KeyV);
+        // 读取保存的快捷键配置
+        let config_dir = app_handle.path().app_config_dir().unwrap();
+        let config_file = config_dir.join("hotkey.txt");
+        let hotkey_str = if config_file.exists() {
+          std::fs::read_to_string(config_file).unwrap_or("Alt+V".to_string())
+        } else {
+          "Alt+V".to_string()
+        };
+        
+        // 解析快捷键字符串
+        let (modifiers, key_code) = parse_hotkey(&hotkey_str);
+        let shortcut = Shortcut::new(modifiers, key_code);
         
         let _ = app_handle.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, _event| {
           let handle = app.clone();
@@ -346,7 +499,9 @@ fn main() {
       set_clipboard_and_paste,
       list_history_by_date,
       search_history_by_date,
-      get_cursor_position
+      get_cursor_position,
+      get_hotkey,
+      set_hotkey
     ])
     .plugin(tauri_plugin_global_shortcut::Builder::new().build())
     .run(tauri::generate_context!())

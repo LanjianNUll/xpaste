@@ -16,7 +16,8 @@
         "title": "Paste App",
         "width": 980,
         "height": 720,
-        "resizable": true
+        "resizable": true,
+        "skipTaskbar": true
       },
       {
         "label": "popup",
@@ -34,6 +35,11 @@
     ],
     "security": {
       "csp": null
+    },
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "tooltip": "Paste App",
+      "menuOnLeftClick": false
     }
   },
   "bundle": {

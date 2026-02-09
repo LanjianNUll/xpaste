@@ -145,25 +145,15 @@ function imageSrc(item: ClipboardItem) {
 onMounted(async () => {
   await loadHistory();
   
+  const appWindow = getCurrentWebviewWindow();
+  
   // 监听窗口失焦事件 - 使用 blur 事件
   try {
     window.addEventListener('blur', () => {
-      const appWindow = getCurrentWebviewWindow();
       appWindow.hide();
     });
   } catch (err) {
     console.error("Failed to setup blur listener", err);
-  }
-  
-  // 拦截关闭事件，改为隐藏窗口
-  try {
-    const appWindow = getCurrentWebviewWindow();
-    await appWindow.onCloseRequested((event) => {
-      event.preventDefault();
-      appWindow.hide();
-    });
-  } catch (err) {
-    console.error("Failed to setup close listener", err);
   }
 });
 

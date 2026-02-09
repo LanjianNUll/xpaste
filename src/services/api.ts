@@ -53,6 +53,22 @@ export async function getCursorPosition(): Promise<{ x: number; y: number }> {
   }
 }
 
+export async function getHotkey(): Promise<string> {
+  try {
+    return await invoke<string>("get_hotkey");
+  } catch {
+    return "Alt+V";
+  }
+}
+
+export async function setHotkey(hotkey: string): Promise<void> {
+  try {
+    await invoke<void>("set_hotkey", { hotkey });
+  } catch (err) {
+    throw err;
+  }
+}
+
 function mockHistory(): ClipboardItem[] {
   const now = Date.now();
   return [
