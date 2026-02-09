@@ -35,12 +35,6 @@
     ],
     "security": {
       "csp": null
-    },
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "tooltip": "Xpaste",
-      "menuOnLeftClick": false,
-      "iconAsTemplate": false
     }
   },
   "bundle": {

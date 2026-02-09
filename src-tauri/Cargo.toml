@@ -1,8 +1,8 @@
 [package]
 name = "paste_app"
-version = "0.0.1"
+version = "1.0.1"
 description = "Clipboard history manager"
-authors = ["you"]
+authors = ["lanjian"]
 edition = "2021"
 
 [build-dependencies]
