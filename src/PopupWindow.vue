@@ -28,6 +28,7 @@ const formatLabel: Record<ClipboardItem["format"], string> = {
 
 const debounceHandle = ref<number | null>(null);
 const unlistenHandle = ref<(() => void) | null>(null);
+const popupBodyRef = ref<HTMLElement | null>(null);
 
 function getDateRange(type: DateRangeType): DateRange {
   const now = new Date();
@@ -169,6 +170,19 @@ onMounted(async () => {
   } catch (err) {
     console.error("Failed to setup blur listener", err);
   }
+  
+  // 监听窗口显示事件，滚动到顶部
+  try {
+    const unlistenShow = await appWindow.listen('tauri://focus', () => {
+      console.log("PopupWindow: window focused, scrolling to top");
+      if (popupBodyRef.value) {
+        popupBodyRef.value.scrollTop = 0;
+      }
+    });
+    // 也可以在这里保存 unlistenShow 以便清理
+  } catch (err) {
+    console.error("Failed to setup focus listener", err);
+  }
 });
 
 onBeforeUnmount(() => {
@@ -203,7 +217,7 @@ watch(customDate, () => {
       </el-tabs>
     </div>
 
-    <div class="popup-body">
+    <div class="popup-body" ref="popupBodyRef">
       <div
         v-for="item in items"
         :key="item.id"
