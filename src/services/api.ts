@@ -12,11 +12,36 @@ export async function fetchHistory(query = "", limit = 200): Promise<ClipboardIt
   }
 }
 
+export async function fetchHistoryByDate(
+  startTs: number,
+  endTs: number,
+  query = "",
+  limit = 200
+): Promise<ClipboardItem[]> {
+  try {
+    if (query.trim().length === 0) {
+      return await invoke<ClipboardItem[]>("list_history_by_date", { startTs, endTs, limit });
+    }
+    return await invoke<ClipboardItem[]>("search_history_by_date", { query, startTs, endTs, limit });
+  } catch {
+    return mockHistory();
+  }
+}
+
 export async function setClipboard(id: number): Promise<void> {
   try {
     await invoke<void>("set_clipboard", { id });
   } catch {
     // ignore in web context
+  }
+}
+
+export async function getCursorPosition(): Promise<{ x: number; y: number }> {
+  try {
+    const [x, y] = await invoke<[number, number]>("get_cursor_position");
+    return { x, y };
+  } catch {
+    return { x: 0, y: 0 };
   }
 }
 

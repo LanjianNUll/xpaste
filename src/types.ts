@@ -1,6 +1,13 @@
 ﻿export type ClipboardFormat = "text" | "image" | "html" | "file" | "color";
 export type ClipboardCategory = "link" | "image" | "text" | "file";
 
+export type DateRangeType = "today" | "yesterday" | "beforeYesterday" | "custom";
+
+export interface DateRange {
+  startTs: number;
+  endTs: number;
+}
+
 export interface ClipboardItem {
   id: number;
   format: ClipboardFormat;

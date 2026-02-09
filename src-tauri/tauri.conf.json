@@ -17,6 +17,19 @@
         "width": 980,
         "height": 720,
         "resizable": true
+      },
+      {
+        "label": "popup",
+        "title": "Paste Quick",
+        "url": "popup.html",
+        "width": 360,
+        "height": 500,
+        "visible": false,
+        "decorations": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "center": false
       }
     ],
     "security": {

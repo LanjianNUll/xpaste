@@ -3,13 +3,15 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import { ElMessage } from "element-plus";
 import hljs from "highlight.js/lib/common";
 import { listen } from "@tauri-apps/api/event";
-import type { ClipboardItem } from "@/types";
-import { fetchHistory, setClipboard } from "@/services/api";
+import type { ClipboardItem, DateRangeType, DateRange } from "@/types";
+import { fetchHistoryByDate, setClipboard } from "@/services/api";
 
 const query = ref("");
 const items = ref<ClipboardItem[]>([]);
 const loading = ref(false);
 const selectedId = ref<number | null>(null);
+const activeDate = ref<DateRangeType>("today");
+const customDate = ref<Date>(new Date());
 
 const selectedItem = computed(() => {
   if (selectedId.value != null) {
@@ -36,10 +38,42 @@ const formatLabel: Record<ClipboardItem["format"], string> = {
 const debounceHandle = ref<number | null>(null);
 const unlistenHandle = ref<(() => void) | null>(null);
 
+function getDateRange(type: DateRangeType): DateRange {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  
+  switch(type) {
+    case "today":
+      return {
+        startTs: today.getTime(),
+        endTs: today.getTime() + 86400000 - 1
+      };
+    case "yesterday":
+      const yesterday = new Date(today.getTime() - 86400000);
+      return {
+        startTs: yesterday.getTime(),
+        endTs: yesterday.getTime() + 86400000 - 1
+      };
+    case "beforeYesterday":
+      const beforeYesterday = new Date(today.getTime() - 172800000);
+      return {
+        startTs: beforeYesterday.getTime(),
+        endTs: beforeYesterday.getTime() + 86400000 - 1
+      };
+    case "custom":
+      const custom = new Date(customDate.value.getFullYear(), customDate.value.getMonth(), customDate.value.getDate());
+      return {
+        startTs: custom.getTime(),
+        endTs: custom.getTime() + 86400000 - 1
+      };
+  }
+}
+
 async function loadHistory() {
   loading.value = true;
   try {
-    const data = await fetchHistory(query.value);
+    const range = getDateRange(activeDate.value);
+    const data = await fetchHistoryByDate(range.startTs, range.endTs, query.value);
     items.value = data;
     if (data.length === 0) {
       selectedId.value = null;
@@ -69,14 +103,18 @@ function selectItem(item: ClipboardItem) {
   selectedId.value = item.id;
 }
 
-async function handlePaste(item: ClipboardItem | null) {
-  if (!item) return;
+async function handleItemClick(item: ClipboardItem) {
+  selectItem(item);
   try {
     await setClipboard(item.id);
     ElMessage.success("已写入剪贴板，可直接粘贴。");
   } catch (err) {
     ElMessage.error("写入剪贴板失败。");
   }
+}
+
+function handleDateChange() {
+  loadHistory();
 }
 
 function formatTime(ts: number) {
@@ -149,6 +187,11 @@ onBeforeUnmount(() => {
   }
 });
 watch(query, scheduleLoad);
+watch(customDate, () => {
+  if (activeDate.value === "custom") {
+    loadHistory();
+  }
+});
 </script>
 
 <template>
@@ -170,19 +213,37 @@ watch(query, scheduleLoad);
           <span>历史记录</span>
           <span style="font-size: 12px; color: var(--muted)">{{ items.length }} 条</span>
         </div>
+        <div class="date-tabs">
+          <el-tabs v-model="activeDate" @tab-change="handleDateChange">
+            <el-tab-pane label="今天" name="today" />
+            <el-tab-pane label="昨天" name="yesterday" />
+            <el-tab-pane label="前天" name="beforeYesterday" />
+            <el-tab-pane label="自定义" name="custom">
+              <el-date-picker
+                v-model="customDate"
+                type="date"
+                placeholder="选择日期"
+                style="width: 100%; margin-top: 8px"
+              />
+            </el-tab-pane>
+          </el-tabs>
+        </div>
         <div class="panel-body">
           <div
             v-for="item in items"
             :key="item.id"
             class="history-item"
             :class="{ active: item.id === selectedItem?.id }"
-            @click="selectItem(item)"
+            @click="handleItemClick(item)"
           >
             <div class="history-meta">
               <span>{{ categoryLabel[item.category] }} / {{ formatLabel[item.format] }}</span>
               <span>{{ formatTime(item.createdAt) }}</span>
             </div>
-            <div class="history-preview" v-html="highlightText(shortPreview(item), query)" />
+            <div v-if="item.format === 'image'" class="history-image-preview">
+              <img :src="imageSrc(item)" class="thumbnail" alt="预览" />
+            </div>
+            <div v-else class="history-preview" v-html="highlightText(shortPreview(item), query)" />
           </div>
           <el-empty v-if="!loading && items.length === 0" description="暂无记录" />
         </div>
@@ -191,7 +252,6 @@ watch(query, scheduleLoad);
       <section class="panel">
         <div class="panel-header">
           <span>预览</span>
-          <el-button type="primary" @click="handlePaste(selectedItem)">写入剪贴板</el-button>
         </div>
         <div class="panel-body" v-if="selectedItem">
           <div class="preview-title">{{ formatLabel[selectedItem.format] }}</div>

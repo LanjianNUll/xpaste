@@ -108,3 +108,54 @@ pub async fn get_item(pool: &SqlitePool, id: i64) -> Result<Option<ClipboardItem
 
   Ok(row)
 }
+
+pub async fn list_items_by_date_range(
+  pool: &SqlitePool,
+  start_ts: i64,
+  end_ts: i64,
+  limit: i64,
+) -> Result<Vec<ClipboardItemRow>, sqlx::Error> {
+  let rows = sqlx::query_as::<_, ClipboardItemRow>(
+    "SELECT id, format, category, text, html, file_path, color, image, image_width, image_height, created_at
+     FROM clipboard_items
+     WHERE created_at >= ? AND created_at <= ?
+     ORDER BY created_at DESC
+     LIMIT ?",
+  )
+  .bind(start_ts)
+  .bind(end_ts)
+  .bind(limit)
+  .fetch_all(pool)
+  .await?;
+
+  Ok(rows)
+}
+
+pub async fn search_items_by_date_range(
+  pool: &SqlitePool,
+  query: &str,
+  start_ts: i64,
+  end_ts: i64,
+  limit: i64,
+) -> Result<Vec<ClipboardItemRow>, sqlx::Error> {
+  let pattern = format!("%{}%", query);
+  let rows = sqlx::query_as::<_, ClipboardItemRow>(
+    "SELECT id, format, category, text, html, file_path, color, image, image_width, image_height, created_at
+     FROM clipboard_items
+     WHERE (text LIKE ? OR html LIKE ? OR file_path LIKE ? OR color LIKE ?)
+       AND created_at >= ? AND created_at <= ?
+     ORDER BY created_at DESC
+     LIMIT ?",
+  )
+  .bind(&pattern)
+  .bind(&pattern)
+  .bind(&pattern)
+  .bind(&pattern)
+  .bind(start_ts)
+  .bind(end_ts)
+  .bind(limit)
+  .fetch_all(pool)
+  .await?;
+
+  Ok(rows)
+}

@@ -120,6 +120,26 @@ body {
   word-break: break-word;
 }
 
+.history-image-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 0;
+}
+
+.thumbnail {
+  width: 60px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.date-tabs {
+  padding: 0 12px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
 .preview-title {
   font-weight: 600;
   font-size: 16px;
