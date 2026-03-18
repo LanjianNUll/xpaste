@@ -109,6 +109,41 @@ fn handle_captured(
   let pool = pool.clone();
   let handle = app_handle.clone();
   tauri::async_runtime::spawn(async move {
+    // 检查数据库中最新的记录是否与当前内容一致
+    match db::get_latest_item(&pool).await {
+      Ok(Some(latest)) => {
+        // 比较内容是否一致
+        let is_duplicate = match captured.item.format.as_str() {
+          "image" => {
+            // 图片比较：比较宽度、高度和图片数据
+            latest.image == captured.item.image
+              && latest.image_width == captured.item.image_width
+              && latest.image_height == captured.item.image_height
+          }
+          _ => {
+            // 文本类内容比较：比较 text、html、file_path、color
+            latest.text == captured.item.text
+              && latest.html == captured.item.html
+              && latest.file_path == captured.item.file_path
+              && latest.color == captured.item.color
+          }
+        };
+        
+        if is_duplicate {
+          log_line("clipboard: duplicate content, skipping insert");
+          return;
+        }
+      }
+      Ok(None) => {
+        // 数据库为空，直接插入
+      }
+      Err(err) => {
+        log_line(&format!("failed to get latest item: {err}"));
+        eprintln!("failed to get latest item: {err}");
+        // 查询失败时仍然尝试插入
+      }
+    }
+    
     if let Err(err) = db::insert_item(&pool, captured.item).await {
       log_line(&format!("failed to insert clipboard item: {err}"));
       eprintln!("failed to insert clipboard item: {err}");

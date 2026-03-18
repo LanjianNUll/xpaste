@@ -159,3 +159,16 @@ pub async fn search_items_by_date_range(
 
   Ok(rows)
 }
+
+pub async fn get_latest_item(pool: &SqlitePool) -> Result<Option<ClipboardItemRow>, sqlx::Error> {
+  let row = sqlx::query_as::<_, ClipboardItemRow>(
+    "SELECT id, format, category, text, html, file_path, color, image, image_width, image_height, created_at
+     FROM clipboard_items
+     ORDER BY created_at DESC
+     LIMIT 1",
+  )
+  .fetch_optional(pool)
+  .await?;
+
+  Ok(row)
+}
