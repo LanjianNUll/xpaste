@@ -1,10 +1,17 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import { ElMessage } from "element-plus";
 import hljs from "highlight.js/lib/common";
 import { listen } from "@tauri-apps/api/event";
 import type { ClipboardItem, DateRangeType, DateRange } from "@/types";
-import { fetchHistoryByDate, setClipboard, getHotkey, setHotkey } from "@/services/api";
+import {
+  fetchHistoryByDate,
+  setClipboard,
+  getHotkey,
+  setHotkey,
+  isAutostartEnabled,
+  setAutostart
+} from "@/services/api";
 
 const query = ref("");
 const items = ref<ClipboardItem[]>([]);
@@ -13,8 +20,9 @@ const selectedId = ref<number | null>(null);
 const activeDate = ref<DateRangeType>("today");
 const customDate = ref<Date>(new Date());
 const currentHotkey = ref("Alt+V");
-const showHotkeyDialog = ref(false);
+const showSettingsDialog = ref(false);
 const newHotkey = ref("");
+const autostart = ref(false);
 
 const selectedItem = computed(() => {
   if (selectedId.value != null) {
@@ -171,24 +179,37 @@ function imageSrc(item: ClipboardItem) {
   return `data:image/png;base64,${item.imageBase64}`;
 }
 
-function openHotkeyDialog() {
+async function openSettingsDialog() {
   newHotkey.value = currentHotkey.value;
-  showHotkeyDialog.value = true;
+  autostart.value = await isAutostartEnabled();
+  showSettingsDialog.value = true;
 }
 
-async function saveHotkey() {
-  if (!newHotkey.value.trim()) {
-    ElMessage.warning("请输入快捷键");
-    return;
+async function saveSettings() {
+  let success = true;
+  
+  // 保存快捷键
+  if (newHotkey.value.trim() && newHotkey.value !== currentHotkey.value) {
+    try {
+      await setHotkey(newHotkey.value);
+      currentHotkey.value = newHotkey.value;
+    } catch (err) {
+      ElMessage.error("设置快捷键失败");
+      success = false;
+    }
   }
   
+  // 保存开机启动设置
   try {
-    await setHotkey(newHotkey.value);
-    currentHotkey.value = newHotkey.value;
-    showHotkeyDialog.value = false;
-    ElMessage.success("快捷键设置成功，请重启应用后生效");
+    await setAutostart(autostart.value);
   } catch (err) {
-    ElMessage.error("设置快捷键失败");
+    ElMessage.error("设置开机启动失败");
+    success = false;
+  }
+  
+  if (success) {
+    showSettingsDialog.value = false;
+    ElMessage.success("设置已保存");
   }
 }
 
@@ -197,6 +218,8 @@ onMounted(async () => {
   
   // 加载当前快捷键
   currentHotkey.value = await getHotkey();
+  // 加载自启动状态
+  autostart.value = await isAutostartEnabled();
   
   try {
     const unlisten = await listen("clipboard://updated", () => {
@@ -233,7 +256,7 @@ watch(customDate, () => {
         style="max-width: 360px"
       />
       <el-button type="primary" @click="loadHistory" :loading="loading">刷新</el-button>
-      <el-button @click="openHotkeyDialog">设置快捷键</el-button>
+      <el-button @click="openSettingsDialog">设置</el-button>
     </div>
 
     <div class="content">
@@ -314,27 +337,29 @@ watch(customDate, () => {
       </section>
     </div>
     
-    <!-- 快捷键设置对话框 -->
-    <el-dialog v-model="showHotkeyDialog" title="设置全局快捷键" width="400px">
-      <div style="margin-bottom: 16px">
-        <div style="margin-bottom: 8px; color: #666; font-size: 14px;">
-          当前快捷键：<span style="color: #2563eb; font-weight: bold;">{{ currentHotkey }}</span>
-        </div>
-        <el-input
-          v-model="newHotkey"
-          placeholder="例如：Alt+V, Ctrl+Shift+V"
-        >
-          <template #prepend>新快捷键</template>
-        </el-input>
-        <div style="margin-top: 8px; color: #999; font-size: 12px;">
-          支持的修饰键：Ctrl、Alt、Shift、Win<br>
-          支持的按键：A-Z 字母键<br>
-          示例：Alt+V、Ctrl+Shift+C
-        </div>
-      </div>
+    <!-- 设置对话框 -->
+    <el-dialog v-model="showSettingsDialog" title="应用设置" width="450px">
+      <el-form label-width="100px">
+        <el-form-item label="全局快捷键">
+          <el-input
+            v-model="newHotkey"
+            placeholder="例如：Alt+V, Ctrl+Shift+V"
+          />
+          <div style="margin-top: 4px; color: #999; font-size: 12px; line-height: 1.4;">
+            当前快捷键：<span style="color: var(--el-color-primary); font-weight: bold;">{{ currentHotkey }}</span><br>
+            支持的修饰键：Ctrl、Alt、Shift、Win<br>
+            支持的按键：A-Z 字母键。修改后可能需要重启应用生效。
+          </div>
+        </el-form-item>
+
+        <el-form-item label="开机启动">
+          <el-switch v-model="autostart" />
+          <span style="margin-left: 8px; color: #666; font-size: 14px;">应用随系统自动启动</span>
+        </el-form-item>
+      </el-form>
       <template #footer>
-        <el-button @click="showHotkeyDialog = false">取消</el-button>
-        <el-button type="primary" @click="saveHotkey">保存</el-button>
+        <el-button @click="showSettingsDialog = false">取消</el-button>
+        <el-button type="primary" @click="saveSettings">保存</el-button>
       </template>
     </el-dialog>
   </div>

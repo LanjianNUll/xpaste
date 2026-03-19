@@ -2,11 +2,11 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN,
+    GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
-    WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
+    CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL,
+    WM_KEYDOWN, WM_SYSKEYDOWN,
 };
 
 type HotkeyCallback = Arc<dyn Fn() + Send + Sync + 'static>;
@@ -60,7 +60,14 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 }
 
 #[cfg(target_os = "windows")]
-pub fn register_hotkey<F>(key_code: u32, ctrl: bool, alt: bool, shift: bool, win: bool, callback: F) -> Result<(), String>
+pub fn register_hotkey<F>(
+    key_code: u32,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    win: bool,
+    callback: F,
+) -> Result<(), String>
 where
     F: Fn() + Send + Sync + 'static,
 {
@@ -114,7 +121,14 @@ pub fn unregister_hotkey() {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn register_hotkey<F>(_key_code: u32, _ctrl: bool, _alt: bool, _shift: bool, _win: bool, _callback: F) -> Result<(), String>
+pub fn register_hotkey<F>(
+    _key_code: u32,
+    _ctrl: bool,
+    _alt: bool,
+    _shift: bool,
+    _win: bool,
+    _callback: F,
+) -> Result<(), String>
 where
     F: Fn() + Send + Sync + 'static,
 {
@@ -123,4 +137,3 @@ where
 
 #[cfg(not(target_os = "windows"))]
 pub fn unregister_hotkey() {}
-

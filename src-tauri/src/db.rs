@@ -1,22 +1,24 @@
-﻿use std::path::Path;
+use std::path::Path;
 
 use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
 
 use crate::models::{ClipboardItemRow, NewClipboardItem};
 
 pub async fn init_db(db_path: &Path) -> Result<SqlitePool, sqlx::Error> {
-  let options = SqliteConnectOptions::new()
-    .filename(db_path)
-    .create_if_missing(true);
+    let options = SqliteConnectOptions::new()
+        .filename(db_path)
+        .create_if_missing(true);
 
-  let pool = sqlx::sqlite::SqlitePoolOptions::new()
-    .max_connections(5)
-    .connect_with(options)
-    .await?;
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(options)
+        .await?;
 
-  sqlx::query("PRAGMA journal_mode = WAL;").execute(&pool).await?;
-  sqlx::query(
-    "CREATE TABLE IF NOT EXISTS clipboard_items (
+    sqlx::query("PRAGMA journal_mode = WAL;")
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS clipboard_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       format TEXT NOT NULL,
       category TEXT NOT NULL,
@@ -29,37 +31,40 @@ pub async fn init_db(db_path: &Path) -> Result<SqlitePool, sqlx::Error> {
       image_height INTEGER,
       created_at INTEGER NOT NULL
     )",
-  )
-  .execute(&pool)
-  .await?;
+    )
+    .execute(&pool)
+    .await?;
 
-  Ok(pool)
+    Ok(pool)
 }
 
 pub async fn insert_item(pool: &SqlitePool, item: NewClipboardItem) -> Result<(), sqlx::Error> {
-  sqlx::query(
-    "INSERT INTO clipboard_items (
+    sqlx::query(
+        "INSERT INTO clipboard_items (
         format, category, text, html, file_path, color, image, image_width, image_height, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  )
-  .bind(item.format)
-  .bind(item.category)
-  .bind(item.text)
-  .bind(item.html)
-  .bind(item.file_path)
-  .bind(item.color)
-  .bind(item.image)
-  .bind(item.image_width)
-  .bind(item.image_height)
-  .bind(item.created_at)
-  .execute(pool)
-  .await?;
+    )
+    .bind(item.format)
+    .bind(item.category)
+    .bind(item.text)
+    .bind(item.html)
+    .bind(item.file_path)
+    .bind(item.color)
+    .bind(item.image)
+    .bind(item.image_width)
+    .bind(item.image_height)
+    .bind(item.created_at)
+    .execute(pool)
+    .await?;
 
-  Ok(())
+    Ok(())
 }
 
-pub async fn list_items(pool: &SqlitePool, limit: i64) -> Result<Vec<ClipboardItemRow>, sqlx::Error> {
-  let rows = sqlx::query_as::<_, ClipboardItemRow>(
+pub async fn list_items(
+    pool: &SqlitePool,
+    limit: i64,
+) -> Result<Vec<ClipboardItemRow>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, ClipboardItemRow>(
     "SELECT id, format, category, text, html, file_path, color, image, image_width, image_height, created_at
      FROM clipboard_items
      ORDER BY created_at DESC
@@ -69,16 +74,16 @@ pub async fn list_items(pool: &SqlitePool, limit: i64) -> Result<Vec<ClipboardIt
   .fetch_all(pool)
   .await?;
 
-  Ok(rows)
+    Ok(rows)
 }
 
 pub async fn search_items(
-  pool: &SqlitePool,
-  query: &str,
-  limit: i64,
+    pool: &SqlitePool,
+    query: &str,
+    limit: i64,
 ) -> Result<Vec<ClipboardItemRow>, sqlx::Error> {
-  let pattern = format!("%{}%", query);
-  let rows = sqlx::query_as::<_, ClipboardItemRow>(
+    let pattern = format!("%{}%", query);
+    let rows = sqlx::query_as::<_, ClipboardItemRow>(
     "SELECT id, format, category, text, html, file_path, color, image, image_width, image_height, created_at
      FROM clipboard_items
      WHERE text LIKE ? OR html LIKE ? OR file_path LIKE ? OR color LIKE ?
@@ -93,11 +98,11 @@ pub async fn search_items(
   .fetch_all(pool)
   .await?;
 
-  Ok(rows)
+    Ok(rows)
 }
 
 pub async fn get_item(pool: &SqlitePool, id: i64) -> Result<Option<ClipboardItemRow>, sqlx::Error> {
-  let row = sqlx::query_as::<_, ClipboardItemRow>(
+    let row = sqlx::query_as::<_, ClipboardItemRow>(
     "SELECT id, format, category, text, html, file_path, color, image, image_width, image_height, created_at
      FROM clipboard_items
      WHERE id = ?",
@@ -106,16 +111,16 @@ pub async fn get_item(pool: &SqlitePool, id: i64) -> Result<Option<ClipboardItem
   .fetch_optional(pool)
   .await?;
 
-  Ok(row)
+    Ok(row)
 }
 
 pub async fn list_items_by_date_range(
-  pool: &SqlitePool,
-  start_ts: i64,
-  end_ts: i64,
-  limit: i64,
+    pool: &SqlitePool,
+    start_ts: i64,
+    end_ts: i64,
+    limit: i64,
 ) -> Result<Vec<ClipboardItemRow>, sqlx::Error> {
-  let rows = sqlx::query_as::<_, ClipboardItemRow>(
+    let rows = sqlx::query_as::<_, ClipboardItemRow>(
     "SELECT id, format, category, text, html, file_path, color, image, image_width, image_height, created_at
      FROM clipboard_items
      WHERE created_at >= ? AND created_at <= ?
@@ -128,18 +133,18 @@ pub async fn list_items_by_date_range(
   .fetch_all(pool)
   .await?;
 
-  Ok(rows)
+    Ok(rows)
 }
 
 pub async fn search_items_by_date_range(
-  pool: &SqlitePool,
-  query: &str,
-  start_ts: i64,
-  end_ts: i64,
-  limit: i64,
+    pool: &SqlitePool,
+    query: &str,
+    start_ts: i64,
+    end_ts: i64,
+    limit: i64,
 ) -> Result<Vec<ClipboardItemRow>, sqlx::Error> {
-  let pattern = format!("%{}%", query);
-  let rows = sqlx::query_as::<_, ClipboardItemRow>(
+    let pattern = format!("%{}%", query);
+    let rows = sqlx::query_as::<_, ClipboardItemRow>(
     "SELECT id, format, category, text, html, file_path, color, image, image_width, image_height, created_at
      FROM clipboard_items
      WHERE (text LIKE ? OR html LIKE ? OR file_path LIKE ? OR color LIKE ?)
@@ -157,11 +162,11 @@ pub async fn search_items_by_date_range(
   .fetch_all(pool)
   .await?;
 
-  Ok(rows)
+    Ok(rows)
 }
 
 pub async fn get_latest_item(pool: &SqlitePool) -> Result<Option<ClipboardItemRow>, sqlx::Error> {
-  let row = sqlx::query_as::<_, ClipboardItemRow>(
+    let row = sqlx::query_as::<_, ClipboardItemRow>(
     "SELECT id, format, category, text, html, file_path, color, image, image_width, image_height, created_at
      FROM clipboard_items
      ORDER BY created_at DESC
@@ -170,5 +175,5 @@ pub async fn get_latest_item(pool: &SqlitePool) -> Result<Option<ClipboardItemRo
   .fetch_optional(pool)
   .await?;
 
-  Ok(row)
+    Ok(row)
 }

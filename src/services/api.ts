@@ -1,5 +1,6 @@
 ﻿import type { ClipboardItem } from "@/types";
 import { invoke } from "@tauri-apps/api/core";
+import { isEnabled, enable, disable } from "@tauri-apps/plugin-autostart";
 
 export async function fetchHistory(query = "", limit = 200): Promise<ClipboardItem[]> {
   try {
@@ -64,6 +65,26 @@ export async function getHotkey(): Promise<string> {
 export async function setHotkey(hotkey: string): Promise<void> {
   try {
     await invoke<void>("set_hotkey", { hotkey });
+  } catch (err) {
+    throw err;
+  }
+}
+
+export async function isAutostartEnabled(): Promise<boolean> {
+  try {
+    return await isEnabled();
+  } catch {
+    return false;
+  }
+}
+
+export async function setAutostart(enabled: boolean): Promise<void> {
+  try {
+    if (enabled) {
+      await enable();
+    } else {
+      await disable();
+    }
   } catch (err) {
     throw err;
   }
