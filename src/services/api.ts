@@ -1,4 +1,4 @@
-﻿import type { ClipboardItem } from "@/types";
+import type { ClipboardItem } from "@/types";
 import { invoke } from "@tauri-apps/api/core";
 import { isEnabled, enable, disable } from "@tauri-apps/plugin-autostart";
 
@@ -85,6 +85,14 @@ export async function setAutostart(enabled: boolean): Promise<void> {
     } else {
       await disable();
     }
+  } catch (err) {
+    throw err;
+  }
+}
+
+export async function clearHistory(): Promise<void> {
+  try {
+    await invoke<void>("clear_history");
   } catch (err) {
     throw err;
   }

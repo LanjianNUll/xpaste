@@ -10,7 +10,8 @@ import {
   getHotkey,
   setHotkey,
   isAutostartEnabled,
-  setAutostart
+  setAutostart,
+  clearHistory
 } from "@/services/api";
 
 const query = ref("");
@@ -179,6 +180,16 @@ function imageSrc(item: ClipboardItem) {
   return `data:image/png;base64,${item.imageBase64}`;
 }
 
+async function clearData() {
+  try {
+    await clearHistory();
+    ElMessage.success("数据已清空");
+    await loadHistory();
+  } catch (err) {
+    ElMessage.error("清空数据失败");
+  }
+}
+
 async function openSettingsDialog() {
   newHotkey.value = currentHotkey.value;
   autostart.value = await isAutostartEnabled();
@@ -210,6 +221,16 @@ async function saveSettings() {
   if (success) {
     showSettingsDialog.value = false;
     ElMessage.success("设置已保存");
+  }
+}
+
+async function clearDataInSettings() {
+  try {
+    await clearHistory();
+    ElMessage.success("数据已清空");
+    await loadHistory();
+  } catch (err) {
+    ElMessage.error("清空数据失败");
   }
 }
 
@@ -355,6 +376,11 @@ watch(customDate, () => {
         <el-form-item label="开机启动">
           <el-switch v-model="autostart" />
           <span style="margin-left: 8px; color: #666; font-size: 14px;">应用随系统自动启动</span>
+        </el-form-item>
+
+        <el-form-item label="数据管理">
+          <el-button type="danger" @click="clearDataInSettings">清理存储</el-button>
+          <span style="margin-left: 8px; color: #666; font-size: 14px;">清空所有剪贴板历史记录</span>
         </el-form-item>
       </el-form>
       <template #footer>

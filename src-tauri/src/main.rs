@@ -107,6 +107,11 @@ async fn set_clipboard(state: State<'_, AppState>, id: i64) -> Result<(), String
     write_to_clipboard(row).map_err(|err| err.to_string())
 }
 
+#[tauri::command]
+async fn clear_history(state: State<'_, AppState>) -> Result<(), String> {
+    db::clear_all(&state.db).await.map_err(|err| err.to_string())
+}
+
 #[cfg(target_os = "windows")]
 #[tauri::command]
 async fn set_clipboard_and_paste(state: State<'_, AppState>, id: i64) -> Result<(), String> {
@@ -620,6 +625,7 @@ fn main() {
             search_history,
             set_clipboard,
             set_clipboard_and_paste,
+            clear_history,
             list_history_by_date,
             search_history_by_date,
             get_cursor_position,

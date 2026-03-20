@@ -158,6 +158,8 @@ fn handle_captured(
     });
 }
 
+const MAX_IMAGE_SIZE: usize = 20 * 1024 * 1024;
+
 fn capture_clipboard() -> Option<CapturedItem> {
     let mut clipboard = match Clipboard::new() {
         Ok(clipboard) => clipboard,
@@ -170,6 +172,10 @@ fn capture_clipboard() -> Option<CapturedItem> {
 
     if let Ok(image) = clipboard.get_image() {
         let bytes = image.bytes.into_owned();
+        if bytes.len() > MAX_IMAGE_SIZE {
+            log_line(&format!("clipboard: image too large ({} bytes), skipping", bytes.len()));
+            return None;
+        }
         let hash = hash_image(&bytes, image.width, image.height);
         let item = NewClipboardItem {
             format: "image".to_string(),

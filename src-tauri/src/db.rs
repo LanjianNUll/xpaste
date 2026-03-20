@@ -177,3 +177,10 @@ pub async fn get_latest_item(pool: &SqlitePool) -> Result<Option<ClipboardItemRo
 
     Ok(row)
 }
+
+pub async fn clear_all(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM clipboard_items")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
