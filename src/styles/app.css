@@ -45,6 +45,35 @@ body {
   gap: 12px;
 }
 
+.main-tabs {
+  flex: 1;
+}
+
+.main-tabs .el-tabs__header {
+  margin: 0;
+}
+
+.main-tabs .el-tabs__nav-wrap::after {
+  height: 0;
+}
+
+.main-tabs .el-tabs__item {
+  padding: 0 20px;
+  height: 40px;
+  line-height: 40px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.history-manager-container {
+  flex: 1;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
 .toolbar-title {
   font-weight: 700;
   font-size: 18px;

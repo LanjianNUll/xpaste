@@ -25,15 +25,19 @@ pub fn classify_text(input: &str) -> TextClassification {
         };
     }
 
-    let category = if looks_like_url(trimmed) {
-        "link"
-    } else {
-        "text"
-    };
+    // 检测链接类型
+    if looks_like_url(trimmed) {
+        return TextClassification {
+            format: "text".to_string(),
+            category: "link".to_string(),
+            color: None,
+            file_path: None,
+        };
+    }
 
     TextClassification {
         format: "text".to_string(),
-        category: category.to_string(),
+        category: "text".to_string(),
         color: None,
         file_path: None,
     }
@@ -41,7 +45,10 @@ pub fn classify_text(input: &str) -> TextClassification {
 
 pub fn looks_like_url(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    lower.starts_with("http://") || lower.starts_with("https://")
+    // 支持 http://、https://、www. 开头的链接
+    lower.starts_with("http://") || 
+    lower.starts_with("https://") || 
+    lower.starts_with("www.")
 }
 
 pub fn looks_like_file_path(text: &str) -> bool {

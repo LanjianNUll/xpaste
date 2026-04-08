@@ -13,6 +13,7 @@ import {
   setAutostart,
   clearHistory
 } from "@/services/api";
+import HistoryManager from "@/components/HistoryManager.vue";
 
 const query = ref("");
 const items = ref<ClipboardItem[]>([]);
@@ -24,6 +25,7 @@ const currentHotkey = ref("Alt+V");
 const showSettingsDialog = ref(false);
 const newHotkey = ref("");
 const autostart = ref(false);
+const activeTab = ref("clipboard");
 
 const selectedItem = computed(() => {
   if (selectedId.value != null) {
@@ -270,21 +272,27 @@ watch(customDate, () => {
   <div class="app-shell">
     <div class="toolbar">
       <div class="toolbar-title">Xpaste</div>
-      <el-input
-        v-model="query"
-        placeholder="搜索剪贴板历史..."
-        clearable
-        style="max-width: 360px"
-      />
-      <el-button type="primary" @click="loadHistory" :loading="loading">刷新</el-button>
+      <el-tabs v-model="activeTab" class="main-tabs">
+        <el-tab-pane label="剪贴板" name="clipboard" />
+        <el-tab-pane label="历史管理" name="history" />
+      </el-tabs>
       <el-button @click="openSettingsDialog">设置</el-button>
     </div>
 
-    <div class="content">
+    <!-- 剪贴板页面 -->
+    <div v-if="activeTab === 'clipboard'" class="content">
       <section class="panel">
         <div class="panel-header">
           <span>历史记录</span>
-          <span style="font-size: 12px; color: var(--muted)">{{ items.length }} 条</span>
+          <div style="display: flex; gap: 12px; align-items: center;">
+            <el-input
+              v-model="query"
+              placeholder="搜索剪贴板历史..."
+              clearable
+              style="max-width: 240px"
+            />
+            <span style="font-size: 12px; color: var(--muted)">{{ items.length }} 条</span>
+          </div>
         </div>
         <div class="date-tabs">
           <el-tabs v-model="activeDate" @tab-change="handleDateChange">
@@ -356,6 +364,11 @@ watch(customDate, () => {
           <el-empty description="请选择一条记录" />
         </div>
       </section>
+    </div>
+
+    <!-- 历史管理页面 -->
+    <div v-else-if="activeTab === 'history'" class="history-manager-container">
+      <HistoryManager />
     </div>
     
     <!-- 设置对话框 -->

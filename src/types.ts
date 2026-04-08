@@ -1,7 +1,7 @@
 ﻿export type ClipboardFormat = "text" | "image" | "html" | "file" | "color";
 export type ClipboardCategory = "link" | "image" | "text" | "file";
 
-export type DateRangeType = "today" | "yesterday" | "beforeYesterday" | "custom";
+export type DateRangeType = "all" | "today" | "yesterday" | "beforeYesterday" | "customRange";
 
 export interface DateRange {
   startTs: number;

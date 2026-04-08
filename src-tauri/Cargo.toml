@@ -1,6 +1,6 @@
 [package]
 name = "paste_app"
-version = "1.0.1"
+version = "1.0.3"
 description = "Clipboard history manager"
 authors = ["lanjian"]
 edition = "2021"
@@ -11,6 +11,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "macros"] }

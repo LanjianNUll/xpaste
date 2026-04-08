@@ -184,3 +184,58 @@ pub async fn clear_all(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .await?;
     Ok(())
 }
+
+pub async fn delete_item(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM clipboard_items WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn delete_items_by_format(pool: &SqlitePool, format: &str) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM clipboard_items WHERE format = ?")
+        .bind(format)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+pub async fn delete_items_by_category(pool: &SqlitePool, category: &str) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM clipboard_items WHERE category = ?")
+        .bind(category)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+pub async fn delete_items_by_date_range(
+    pool: &SqlitePool,
+    start_ts: i64,
+    end_ts: i64,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM clipboard_items WHERE created_at >= ? AND created_at <= ?")
+        .bind(start_ts)
+        .bind(end_ts)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+pub async fn count_items_by_format(pool: &SqlitePool) -> Result<Vec<(String, i64)>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, (String, i64)>(
+        "SELECT format, COUNT(*) FROM clipboard_items GROUP BY format"
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn count_items_by_category(pool: &SqlitePool) -> Result<Vec<(String, i64)>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, (String, i64)>(
+        "SELECT category, COUNT(*) FROM clipboard_items GROUP BY category"
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}

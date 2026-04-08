@@ -98,6 +98,33 @@ export async function clearHistory(): Promise<void> {
   }
 }
 
+export async function deleteHistoryItem(id: number): Promise<void> {
+  await invoke<void>("delete_history_item", { id });
+}
+
+export async function deleteHistoryByFormat(format: string): Promise<number> {
+  return await invoke<number>("delete_history_by_format", { format });
+}
+
+export async function deleteHistoryByCategory(category: string): Promise<number> {
+  return await invoke<number>("delete_history_by_category", { category });
+}
+
+export async function deleteHistoryByDate(
+  startTs: number,
+  endTs: number
+): Promise<number> {
+  return await invoke<number>("delete_history_by_date", { startTs, endTs });
+}
+
+export async function getFormatStats(): Promise<Array<[string, number]>> {
+  return await invoke<Array<[string, number]>>("get_format_stats");
+}
+
+export async function getCategoryStats(): Promise<Array<[string, number]>> {
+  return await invoke<Array<[string, number]>>("get_category_stats");
+}
+
 function mockHistory(): ClipboardItem[] {
   const now = Date.now();
   return [

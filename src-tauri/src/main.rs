@@ -112,6 +112,65 @@ async fn clear_history(state: State<'_, AppState>) -> Result<(), String> {
     db::clear_all(&state.db).await.map_err(|err| err.to_string())
 }
 
+#[tauri::command]
+async fn delete_history_item(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    db::delete_item(&state.db, id)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn delete_history_by_format(
+    state: State<'_, AppState>,
+    format: String,
+) -> Result<u64, String> {
+    db::delete_items_by_format(&state.db, &format)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn delete_history_by_category(
+    state: State<'_, AppState>,
+    category: String,
+) -> Result<u64, String> {
+    db::delete_items_by_category(&state.db, &category)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn delete_history_by_date(
+    state: State<'_, AppState>,
+    start_ts: i64,
+    end_ts: i64,
+) -> Result<u64, String> {
+    db::delete_items_by_date_range(&state.db, start_ts, end_ts)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn get_format_stats(
+    state: State<'_, AppState>,
+) -> Result<Vec<(String, i64)>, String> {
+    db::count_items_by_format(&state.db)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn get_category_stats(
+    state: State<'_, AppState>,
+) -> Result<Vec<(String, i64)>, String> {
+    db::count_items_by_category(&state.db)
+        .await
+        .map_err(|err| err.to_string())
+}
+
 #[cfg(target_os = "windows")]
 #[tauri::command]
 async fn set_clipboard_and_paste(state: State<'_, AppState>, id: i64) -> Result<(), String> {
@@ -391,6 +450,7 @@ fn write_to_clipboard(row: ClipboardItemRow) -> Result<(), arboard::Error> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::Builder::new().build())
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
@@ -630,7 +690,13 @@ fn main() {
             search_history_by_date,
             get_cursor_position,
             get_hotkey,
-            set_hotkey
+            set_hotkey,
+            delete_history_item,
+            delete_history_by_format,
+            delete_history_by_category,
+            delete_history_by_date,
+            get_format_stats,
+            get_category_stats
         ])
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .run(tauri::generate_context!())
