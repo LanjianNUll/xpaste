@@ -7,7 +7,6 @@ use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arboard::Clipboard;
-use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
 
 #[cfg(not(target_os = "windows"))]
@@ -31,7 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     TranslateMessage, HWND_MESSAGE, MSG, WM_CLIPBOARDUPDATE, WNDCLASSW,
 };
 
-use crate::{classify, db, models::NewClipboardItem};
+use crate::{classify, models::NewClipboardItem, sdk::ClipboardSdk};
 
 struct CapturedItem {
     item: NewClipboardItem,
@@ -45,29 +44,29 @@ pub fn init_logger(path: PathBuf) {
     log_line(&format!("logger initialized: {}", path.display()));
 }
 
-pub fn start_watcher(app_handle: AppHandle, pool: SqlitePool) {
+pub fn start_watcher(app_handle: AppHandle, sdk: ClipboardSdk) {
     #[cfg(target_os = "windows")]
     {
         log_line("clipboard: starting Windows listener thread");
         eprintln!("clipboard: starting Windows listener thread");
         std::thread::spawn(move || {
             let handle = app_handle.clone();
-            if let Err(err) = run_clipboard_listener(handle.clone(), pool.clone()) {
+            if let Err(err) = run_clipboard_listener(handle.clone(), sdk.clone()) {
                 log_line(&format!("clipboard listener failed: {err}"));
                 eprintln!("clipboard listener failed: {err}");
-                start_polling_windows(handle, pool);
+                start_polling_windows(handle, sdk);
             }
         });
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        start_polling_async(app_handle, pool);
+        start_polling_async(app_handle, sdk);
     }
 }
 
 #[cfg(target_os = "windows")]
-fn start_polling_windows(app_handle: AppHandle, pool: SqlitePool) {
+fn start_polling_windows(app_handle: AppHandle, sdk: ClipboardSdk) {
     std::thread::spawn(move || {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -77,7 +76,7 @@ fn start_polling_windows(app_handle: AppHandle, pool: SqlitePool) {
         let mut last_hash: Option<u64> = None;
         loop {
             if let Some(captured) = capture_clipboard_with_retry() {
-                handle_captured(&mut last_hash, &app_handle, &pool, captured);
+                handle_captured(&mut last_hash, &app_handle, &sdk, captured);
             }
             std::thread::sleep(Duration::from_millis(500));
         }
@@ -85,12 +84,12 @@ fn start_polling_windows(app_handle: AppHandle, pool: SqlitePool) {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn start_polling_async(app_handle: AppHandle, pool: SqlitePool) {
+fn start_polling_async(app_handle: AppHandle, sdk: ClipboardSdk) {
     tauri::async_runtime::spawn(async move {
         let mut last_hash: Option<u64> = None;
         loop {
             if let Some(captured) = capture_clipboard() {
-                handle_captured(&mut last_hash, &app_handle, &pool, captured);
+                handle_captured(&mut last_hash, &app_handle, &sdk, captured);
             }
             sleep(Duration::from_millis(500)).await;
         }
@@ -100,7 +99,7 @@ fn start_polling_async(app_handle: AppHandle, pool: SqlitePool) {
 fn handle_captured(
     last_hash: &mut Option<u64>,
     app_handle: &AppHandle,
-    pool: &SqlitePool,
+    sdk: &ClipboardSdk,
     captured: CapturedItem,
 ) {
     if *last_hash == Some(captured.hash) {
@@ -108,48 +107,20 @@ fn handle_captured(
     }
     *last_hash = Some(captured.hash);
     log_line(&format!("clipboard: captured item hash={}", captured.hash));
-    let pool = pool.clone();
+    let sdk = sdk.clone();
     let handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        // 检查数据库中最新的记录是否与当前内容一致
-        match db::get_latest_item(&pool).await {
-            Ok(Some(latest)) => {
-                // 比较内容是否一致
-                let is_duplicate = match captured.item.format.as_str() {
-                    "image" => {
-                        // 图片比较：比较宽度、高度和图片数据
-                        latest.image == captured.item.image
-                            && latest.image_width == captured.item.image_width
-                            && latest.image_height == captured.item.image_height
-                    }
-                    _ => {
-                        // 文本类内容比较：比较 text、html、file_path、color
-                        latest.text == captured.item.text
-                            && latest.html == captured.item.html
-                            && latest.file_path == captured.item.file_path
-                            && latest.color == captured.item.color
-                    }
-                };
-
-                if is_duplicate {
-                    log_line("clipboard: duplicate content, skipping insert");
-                    return;
-                }
-            }
-            Ok(None) => {
-                // 数据库为空，直接插入
+        match sdk.save_if_new(captured.item).await {
+            Ok(false) => {
+                log_line("clipboard: duplicate content, skipping insert");
+                return;
             }
             Err(err) => {
-                log_line(&format!("failed to get latest item: {err}"));
-                eprintln!("failed to get latest item: {err}");
-                // 查询失败时仍然尝试插入
+                log_line(&format!("failed to insert clipboard item: {err}"));
+                eprintln!("failed to insert clipboard item: {err}");
+                return;
             }
-        }
-
-        if let Err(err) = db::insert_item(&pool, captured.item).await {
-            log_line(&format!("failed to insert clipboard item: {err}"));
-            eprintln!("failed to insert clipboard item: {err}");
-            return;
+            Ok(true) => {}
         }
         match handle.emit("clipboard://updated", ()) {
             Ok(_) => log_line("clipboard: event emitted"),
@@ -173,7 +144,10 @@ fn capture_clipboard() -> Option<CapturedItem> {
     if let Ok(image) = clipboard.get_image() {
         let bytes = image.bytes.into_owned();
         if bytes.len() > MAX_IMAGE_SIZE {
-            log_line(&format!("clipboard: image too large ({} bytes), skipping", bytes.len()));
+            log_line(&format!(
+                "clipboard: image too large ({} bytes), skipping",
+                bytes.len()
+            ));
             return None;
         }
         let hash = hash_image(&bytes, image.width, image.height);
@@ -252,7 +226,7 @@ fn hash_image(bytes: &[u8], width: usize, height: usize) -> u64 {
 }
 
 #[cfg(target_os = "windows")]
-fn run_clipboard_listener(app_handle: AppHandle, pool: SqlitePool) -> windows::core::Result<()> {
+fn run_clipboard_listener(app_handle: AppHandle, sdk: ClipboardSdk) -> windows::core::Result<()> {
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
     }
@@ -307,7 +281,7 @@ fn run_clipboard_listener(app_handle: AppHandle, pool: SqlitePool) -> windows::c
             log_line("clipboard: WM_CLIPBOARDUPDATE received");
             let captured = capture_clipboard_with_retry();
             if let Some(captured) = captured {
-                handle_captured(&mut last_hash, &app_handle, &pool, captured);
+                handle_captured(&mut last_hash, &app_handle, &sdk, captured);
             } else {
                 log_line("clipboard update received but no data captured");
                 eprintln!("clipboard update received but no data captured");

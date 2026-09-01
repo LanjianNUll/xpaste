@@ -2,7 +2,6 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import { ElMessage } from "element-plus";
 import hljs from "highlight.js/lib/common";
-import { listen } from "@tauri-apps/api/event";
 import type { ClipboardItem, DateRangeType, DateRange } from "@/types";
 import {
   fetchHistoryByDate,
@@ -11,9 +10,11 @@ import {
   setHotkey,
   isAutostartEnabled,
   setAutostart,
-  clearHistory
+  clearHistory,
+  subscribeClipboardUpdates
 } from "@/services/api";
 import HistoryManager from "@/components/HistoryManager.vue";
+import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
 
 const query = ref("");
 const items = ref<ClipboardItem[]>([]);
@@ -21,7 +22,7 @@ const loading = ref(false);
 const selectedId = ref<number | null>(null);
 const activeDate = ref<DateRangeType>("today");
 const customDate = ref<Date>(new Date());
-const currentHotkey = ref("Alt+V");
+const currentHotkey = ref("Win+V");
 const showSettingsDialog = ref(false);
 const newHotkey = ref("");
 const autostart = ref(false);
@@ -177,11 +178,6 @@ function shortPreview(item: ClipboardItem) {
   return item.text ?? item.html ?? "";
 }
 
-function imageSrc(item: ClipboardItem) {
-  if (!item.imageBase64) return "";
-  return `data:image/png;base64,${item.imageBase64}`;
-}
-
 async function clearData() {
   try {
     await clearHistory();
@@ -245,7 +241,7 @@ onMounted(async () => {
   autostart.value = await isAutostartEnabled();
   
   try {
-    const unlisten = await listen("clipboard://updated", () => {
+    const unlisten = await subscribeClipboardUpdates(() => {
       console.log("clipboard://updated event received");
       loadHistory();
     });
@@ -322,7 +318,7 @@ watch(customDate, () => {
               <span>{{ formatTime(item.createdAt) }}</span>
             </div>
             <div v-if="item.format === 'image'" class="history-image-preview">
-              <img :src="imageSrc(item)" class="thumbnail" alt="预览" />
+              <LazyClipboardImage :item-id="item.id" class="thumbnail" alt="预览" />
             </div>
             <div v-else class="history-preview" v-html="highlightText(shortPreview(item), query)" />
           </div>
@@ -338,7 +334,7 @@ watch(customDate, () => {
           <div class="preview-title">{{ formatLabel[selectedItem.format] }}</div>
 
           <template v-if="selectedItem.format === 'image'">
-            <img class="preview-image" :src="imageSrc(selectedItem)" alt="clipboard" />
+            <LazyClipboardImage class="preview-image" :item-id="selectedItem.id" alt="clipboard" />
           </template>
 
           <template v-else-if="selectedItem.format === 'color'">
@@ -356,8 +352,16 @@ watch(customDate, () => {
           </template>
 
           <template v-else>
-            <div v-if="selectedItem.text && isCodeLike(selectedItem.text)" class="preview-code" v-html="codeHtml(selectedItem.text)" />
-            <div v-else class="preview-text" v-html="highlightText(selectedItem.text || selectedItem.html || '', query)" />
+            <div
+              v-if="selectedItem.text && isCodeLike(selectedItem.text)"
+              class="preview-code"
+              v-html="codeHtml(selectedItem.text)"
+            />
+            <div
+              v-else
+              class="preview-text"
+              v-html="highlightText(selectedItem.text || selectedItem.html || '', query)"
+            />
           </template>
         </div>
         <div class="panel-body" v-else>
@@ -377,7 +381,7 @@ watch(customDate, () => {
         <el-form-item label="全局快捷键">
           <el-input
             v-model="newHotkey"
-            placeholder="例如：Alt+V, Ctrl+Shift+V"
+            placeholder="例如：Win+V, Ctrl+Shift+V"
           />
           <div style="margin-top: 4px; color: #999; font-size: 12px; line-height: 1.4;">
             当前快捷键：<span style="color: var(--el-color-primary); font-weight: bold;">{{ currentHotkey }}</span><br>

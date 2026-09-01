@@ -1,7 +1,7 @@
 ﻿export type ClipboardFormat = "text" | "image" | "html" | "file" | "color";
 export type ClipboardCategory = "link" | "image" | "text" | "file";
 
-export type DateRangeType = "all" | "today" | "yesterday" | "beforeYesterday" | "customRange";
+export type DateRangeType = "all" | "today" | "yesterday" | "beforeYesterday" | "custom" | "customRange";
 
 export interface DateRange {
   startTs: number;
@@ -16,8 +16,22 @@ export interface ClipboardItem {
   html?: string | null;
   filePath?: string | null;
   color?: string | null;
-  imageBase64?: string | null;
   imageWidth?: number | null;
   imageHeight?: number | null;
   createdAt: number;
+}
+
+export interface HistoryPage {
+  items: ClipboardItem[];
+  total: number;
+}
+
+export interface HistoryPageQuery {
+  startTs?: number;
+  endTs?: number;
+  keyword?: string;
+  formats?: string[];
+  categories?: string[];
+  page: number;
+  pageSize: number;
 }

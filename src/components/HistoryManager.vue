@@ -1,18 +1,21 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, onMounted, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { ArrowDown, Search } from "@element-plus/icons-vue";
 import zhCn from "element-plus/dist/locale/zh-cn.mjs";
 import type { ClipboardItem, DateRangeType, DateRange } from "@/types";
 import {
-  fetchHistoryByDate,
+  fetchHistoryPage,
   clearHistory,
   deleteHistoryItem,
+  deleteHistoryItems,
   deleteHistoryByFormat,
   deleteHistoryByCategory,
   getFormatStats,
-  getCategoryStats
+  getCategoryStats,
+  getClipboardImage
 } from "@/services/api";
+import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
 
 const filters = ref({
   dateRange: "today" as DateRangeType,
@@ -77,8 +80,9 @@ function getDateRange(type: DateRangeType): DateRange | null {
       };
     case "customRange":
       if (filters.value.customDateRange && filters.value.customDateRange.length === 2) {
-        const startDate = new Date(filters.value.customDateRange[0].getFullYear(), filters.value.customDateRange[0].getMonth(), filters.value.customDateRange[0].getDate());
-        const endDate = new Date(filters.value.customDateRange[1].getFullYear(), filters.value.customDateRange[1].getMonth(), filters.value.customDateRange[1].getDate());
+        const [start, end] = filters.value.customDateRange;
+        const startDate = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+        const endDate = new Date(end.getFullYear(), end.getMonth(), end.getDate());
         return {
           startTs: startDate.getTime(),
           endTs: endDate.getTime() + 86400000 - 1
@@ -91,48 +95,24 @@ function getDateRange(type: DateRangeType): DateRange | null {
   }
 }
 
-const paginatedItems = computed(() => {
-  const start = (pagination.value.currentPage - 1) * pagination.value.pageSize;
-  const end = start + pagination.value.pageSize;
-  return items.value.slice(start, end);
-});
-
 async function loadHistory() {
   loading.value = true;
   try {
     const range = getDateRange(filters.value.dateRange);
-    let data: ClipboardItem[];
-    
-    // 如果是"全部时间"，不传时间范围参数
-    if (range === null) {
-      data = await fetchHistoryByDate(0, Date.now() + 86400000, filters.value.keyword);
-    } else {
-      data = await fetchHistoryByDate(range.startTs, range.endTs, filters.value.keyword);
-    }
-    
-    // 前端按类型过滤
-    if (filters.value.formats.length > 0) {
-      data = data.filter(item => {
-        // 如果筛选包含"link"，需要同时检查 format 和 category
-        if (filters.value.formats.includes('link')) {
-          return item.category === 'link' || filters.value.formats.includes(item.format);
-        }
-        return filters.value.formats.includes(item.format);
-      });
-    }
-    
-    // 前端按分类过滤
-    if (filters.value.categories.length > 0) {
-      data = data.filter(item => filters.value.categories.includes(item.category));
-    }
-    
-    items.value = data;
-    pagination.value.total = data.length;
-    pagination.value.currentPage = 1;
+    const result = await fetchHistoryPage({
+      startTs: range?.startTs,
+      endTs: range?.endTs,
+      keyword: filters.value.keyword,
+      formats: filters.value.formats,
+      categories: filters.value.categories,
+      page: pagination.value.currentPage,
+      pageSize: pagination.value.pageSize
+    });
+    items.value = result.items;
+    pagination.value.total = result.total;
     
     // 加载统计信息
-    await loadFormatStats();
-    await loadCategoryStats();
+    await Promise.all([loadFormatStats(), loadCategoryStats()]);
   } catch (err) {
     ElMessage.error("加载历史记录失败");
   } finally {
@@ -161,7 +141,7 @@ function debounceLoad() {
     window.clearTimeout(debounceHandle.value);
   }
   debounceHandle.value = window.setTimeout(() => {
-    loadHistory();
+    reloadFromFirstPage();
   }, 300);
 }
 
@@ -170,8 +150,14 @@ function handleSelectionChange(selection: ClipboardItem[]) {
 }
 
 function handlePageChange() {
+  loadHistory();
   // 分页变化时自动滚动到顶部
   window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function reloadFromFirstPage() {
+  pagination.value.currentPage = 1;
+  loadHistory();
 }
 
 function formatTime(ts: number) {
@@ -198,17 +184,18 @@ function shortPreview(item: ClipboardItem) {
   return text.length > 100 ? text.substring(0, 100) + "..." : text;
 }
 
-function imageSrc(item: ClipboardItem) {
-  if (!item.imageBase64) return "";
-  return `data:image/png;base64,${item.imageBase64}`;
+async function openImagePreview(item: ClipboardItem) {
+  try {
+    const data = await getClipboardImage(item.id);
+    imagePreviewUrl.value = `data:image/png;base64,${data}`;
+    imagePreviewVisible.value = true;
+  } catch {
+    ElMessage.error("加载图片失败");
+  }
 }
 
-function openImagePreview(item: ClipboardItem) {
-  const src = imageSrc(item);
-  if (src) {
-    imagePreviewUrl.value = src;
-    imagePreviewVisible.value = true;
-  }
+function releaseImagePreview() {
+  imagePreviewUrl.value = "";
 }
 
 async function openLink(item: ClipboardItem) {
@@ -267,9 +254,7 @@ async function handleBatchDelete() {
       }
     );
     
-    for (const item of selectedItems.value) {
-      await deleteHistoryItem(item.id);
-    }
+    await deleteHistoryItems(selectedItems.value.map(item => item.id));
     
     ElMessage.success(`已删除 ${selectedItems.value.length} 条记录`);
     selectedItems.value = [];
@@ -357,7 +342,7 @@ onMounted(() => {
 
 watch(() => filters.value.customDateRange, () => {
   if (filters.value.dateRange === "customRange") {
-    loadHistory();
+    reloadFromFirstPage();
   }
 }, { deep: true });
 </script>
@@ -373,7 +358,7 @@ watch(() => filters.value.customDateRange, () => {
           <el-select 
             v-model="filters.dateRange" 
             placeholder="时间范围"
-            @change="loadHistory"
+            @change="reloadFromFirstPage"
             style="width: 130px"
           >
             <el-option label="全部" value="all" />
@@ -391,7 +376,7 @@ watch(() => filters.value.customDateRange, () => {
             range-separator="至"
             start-placeholder="开始日期"
             end-placeholder="结束日期"
-            @change="loadHistory"
+            @change="reloadFromFirstPage"
             style="width: 260px"
           />
           
@@ -400,7 +385,7 @@ watch(() => filters.value.customDateRange, () => {
             v-model="filters.categories"
             multiple
             placeholder="分类筛选"
-            @change="loadHistory"
+            @change="reloadFromFirstPage"
             style="width: 150px"
             collapse-tags
             collapse-tags-tooltip
@@ -471,7 +456,7 @@ watch(() => filters.value.customDateRange, () => {
     <!-- 记录列表 -->
     <div class="table-container">
       <el-table
-        :data="paginatedItems"
+        :data="items"
         @selection-change="handleSelectionChange"
         v-loading="loading"
         stripe
@@ -500,7 +485,7 @@ watch(() => filters.value.customDateRange, () => {
       <el-table-column label="内容预览" min-width="400">
         <template #default="{ row }">
           <div v-if="row.format === 'image'" class="preview-image" @click="openImagePreview(row)">
-            <img :src="imageSrc(row)" class="thumbnail" alt="预览" />
+            <LazyClipboardImage :item-id="row.id" class="thumbnail" alt="预览" />
             <span class="image-label">[图片] 点击放大</span>
           </div>
           <div v-else-if="row.category === 'link'" class="preview-link" @click="openLink(row)">
@@ -543,7 +528,7 @@ watch(() => filters.value.customDateRange, () => {
         :page-sizes="[10, 20, 50, 100]"
         :total="pagination.total"
         layout="total, sizes, prev, pager, next, jumper"
-        @size-change="loadHistory"
+        @size-change="reloadFromFirstPage"
         @current-change="handlePageChange"
         class="pagination"
       />
@@ -552,6 +537,7 @@ watch(() => filters.value.customDateRange, () => {
     <!-- 图片预览对话框 -->
     <el-dialog
       v-model="imagePreviewVisible"
+      @closed="releaseImagePreview"
       title="图片预览"
       width="80%"
       top="5vh"

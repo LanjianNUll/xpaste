@@ -4,17 +4,17 @@
 mod classify;
 mod clipboard;
 mod db;
+mod history_repository;
 mod keyboard_hook;
 mod models;
+mod sdk;
+mod window_controller;
 
-use std::borrow::Cow;
-
-use arboard::ImageData;
-use sqlx::SqlitePool;
 use tauri::{Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 
-use crate::models::{ClipboardItem, ClipboardItemRow};
+use crate::models::{ClipboardItem, HistoryPage, HistoryPageQuery};
+use crate::sdk::ClipboardSdk;
 
 fn parse_hotkey(hotkey: &str) -> (u32, bool, bool, bool, bool) {
     let parts: Vec<&str> = hotkey.split('+').map(|s| s.trim()).collect();
@@ -65,7 +65,7 @@ fn parse_hotkey(hotkey: &str) -> (u32, bool, bool, bool, bool) {
 }
 
 struct AppState {
-    db: SqlitePool,
+    sdk: ClipboardSdk,
 }
 
 #[tauri::command]
@@ -73,11 +73,7 @@ async fn list_history(
     state: State<'_, AppState>,
     limit: Option<i64>,
 ) -> Result<Vec<ClipboardItem>, String> {
-    let limit = limit.unwrap_or(200).clamp(1, 1000);
-    let rows = db::list_items(&state.db, limit)
-        .await
-        .map_err(|err| err.to_string())?;
-    Ok(rows.into_iter().map(ClipboardItem::from_row).collect())
+    state.sdk.list_history("", limit).await
 }
 
 #[tauri::command]
@@ -86,40 +82,66 @@ async fn search_history(
     query: String,
     limit: Option<i64>,
 ) -> Result<Vec<ClipboardItem>, String> {
-    let trimmed = query.trim();
-    if trimmed.is_empty() {
-        return list_history(state, limit).await;
-    }
-    let limit = limit.unwrap_or(200).clamp(1, 1000);
-    let rows = db::search_items(&state.db, trimmed, limit)
-        .await
-        .map_err(|err| err.to_string())?;
-    Ok(rows.into_iter().map(ClipboardItem::from_row).collect())
+    state.sdk.list_history(&query, limit).await
+}
+
+#[tauri::command]
+async fn get_history_page(
+    state: State<'_, AppState>,
+    query: HistoryPageQuery,
+) -> Result<HistoryPage, String> {
+    state.sdk.history_page(query).await
 }
 
 #[tauri::command]
 async fn set_clipboard(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    let row = db::get_item(&state.db, id)
-        .await
-        .map_err(|err| err.to_string())?
-        .ok_or_else(|| "记录不存在".to_string())?;
+    state.sdk.copy_item(id).await
+}
 
-    write_to_clipboard(row).map_err(|err| err.to_string())
+#[tauri::command]
+async fn get_clipboard_image(
+    state: State<'_, AppState>,
+    id: i64,
+    thumbnail: Option<bool>,
+) -> Result<String, String> {
+    state.sdk.image_base64(id, thumbnail.unwrap_or(false)).await
+}
+
+#[tauri::command]
+async fn save_clipboard_text(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<(), String> {
+    state.sdk.save_text(text).await?;
+    let _ = tauri::Emitter::emit(&app, "clipboard://updated", ());
+    Ok(())
+}
+
+#[tauri::command]
+async fn save_clipboard_image(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    image_base64: String,
+) -> Result<(), String> {
+    state.sdk.save_png_base64(image_base64).await?;
+    let _ = tauri::Emitter::emit(&app, "clipboard://updated", ());
+    Ok(())
 }
 
 #[tauri::command]
 async fn clear_history(state: State<'_, AppState>) -> Result<(), String> {
-    db::clear_all(&state.db).await.map_err(|err| err.to_string())
+    state.sdk.clear_history().await
 }
 
 #[tauri::command]
-async fn delete_history_item(
-    state: State<'_, AppState>,
-    id: i64,
-) -> Result<(), String> {
-    db::delete_item(&state.db, id)
-        .await
-        .map_err(|err| err.to_string())
+async fn delete_history_item(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    state.sdk.delete_item(id).await
+}
+
+#[tauri::command]
+async fn delete_history_items(state: State<'_, AppState>, ids: Vec<i64>) -> Result<u64, String> {
+    state.sdk.delete_items(&ids).await
 }
 
 #[tauri::command]
@@ -127,9 +149,7 @@ async fn delete_history_by_format(
     state: State<'_, AppState>,
     format: String,
 ) -> Result<u64, String> {
-    db::delete_items_by_format(&state.db, &format)
-        .await
-        .map_err(|err| err.to_string())
+    state.sdk.delete_by_format(&format).await
 }
 
 #[tauri::command]
@@ -137,9 +157,7 @@ async fn delete_history_by_category(
     state: State<'_, AppState>,
     category: String,
 ) -> Result<u64, String> {
-    db::delete_items_by_category(&state.db, &category)
-        .await
-        .map_err(|err| err.to_string())
+    state.sdk.delete_by_category(&category).await
 }
 
 #[tauri::command]
@@ -148,43 +166,34 @@ async fn delete_history_by_date(
     start_ts: i64,
     end_ts: i64,
 ) -> Result<u64, String> {
-    db::delete_items_by_date_range(&state.db, start_ts, end_ts)
-        .await
-        .map_err(|err| err.to_string())
+    state.sdk.delete_by_date(start_ts, end_ts).await
 }
 
 #[tauri::command]
-async fn get_format_stats(
-    state: State<'_, AppState>,
-) -> Result<Vec<(String, i64)>, String> {
-    db::count_items_by_format(&state.db)
-        .await
-        .map_err(|err| err.to_string())
+async fn get_format_stats(state: State<'_, AppState>) -> Result<Vec<(String, i64)>, String> {
+    state.sdk.format_stats().await
 }
 
 #[tauri::command]
-async fn get_category_stats(
-    state: State<'_, AppState>,
-) -> Result<Vec<(String, i64)>, String> {
-    db::count_items_by_category(&state.db)
-        .await
-        .map_err(|err| err.to_string())
+async fn get_category_stats(state: State<'_, AppState>) -> Result<Vec<(String, i64)>, String> {
+    state.sdk.category_stats().await
 }
 
 #[cfg(target_os = "windows")]
 #[tauri::command]
-async fn set_clipboard_and_paste(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+async fn set_clipboard_and_paste(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
     };
 
-    // 先写入剪贴板
-    let row = db::get_item(&state.db, id)
-        .await
-        .map_err(|err| err.to_string())?
-        .ok_or_else(|| "记录不存在".to_string())?;
-
-    write_to_clipboard(row).map_err(|err| err.to_string())?;
+    state.sdk.copy_item(id).await?;
+    window_controller::hide_popup(&app)?;
+    tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
+    window_controller::restore_previous_window()?;
 
     // 等待剪贴板写入完成
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -262,17 +271,21 @@ async fn set_clipboard_and_paste(state: State<'_, AppState>, id: i64) -> Result<
 }
 
 #[tauri::command]
+fn hide_popup(app: tauri::AppHandle) -> Result<(), String> {
+    window_controller::hide_popup(&app)
+}
+
+#[tauri::command]
 async fn list_history_by_date(
     state: State<'_, AppState>,
     start_ts: i64,
     end_ts: i64,
     limit: Option<i64>,
 ) -> Result<Vec<ClipboardItem>, String> {
-    let limit = limit.unwrap_or(200).clamp(1, 1000);
-    let rows = db::list_items_by_date_range(&state.db, start_ts, end_ts, limit)
+    state
+        .sdk
+        .list_history_by_date("", start_ts, end_ts, limit)
         .await
-        .map_err(|err| err.to_string())?;
-    Ok(rows.into_iter().map(ClipboardItem::from_row).collect())
 }
 
 #[tauri::command]
@@ -283,15 +296,10 @@ async fn search_history_by_date(
     end_ts: i64,
     limit: Option<i64>,
 ) -> Result<Vec<ClipboardItem>, String> {
-    let trimmed = query.trim();
-    if trimmed.is_empty() {
-        return list_history_by_date(state, start_ts, end_ts, limit).await;
-    }
-    let limit = limit.unwrap_or(200).clamp(1, 1000);
-    let rows = db::search_items_by_date_range(&state.db, trimmed, start_ts, end_ts, limit)
+    state
+        .sdk
+        .list_history_by_date(&query, start_ts, end_ts, limit)
         .await
-        .map_err(|err| err.to_string())?;
-    Ok(rows.into_iter().map(ClipboardItem::from_row).collect())
 }
 
 #[cfg(target_os = "windows")]
@@ -322,7 +330,7 @@ async fn get_hotkey(app: tauri::AppHandle) -> Result<String, String> {
     if config_file.exists() {
         std::fs::read_to_string(config_file).map_err(|e| e.to_string())
     } else {
-        Ok("Alt+V".to_string())
+        Ok("Win+V".to_string())
     }
 }
 
@@ -344,66 +352,7 @@ async fn set_hotkey(app: tauri::AppHandle, hotkey: String) -> Result<(), String>
         keyboard_hook::register_hotkey(key_code, ctrl, alt, shift, win, move || {
             let handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
-                if let Some(window) = handle.get_webview_window("popup") {
-                    use windows::Win32::Foundation::POINT;
-                    use windows::Win32::Graphics::Gdi::{
-                        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-                    };
-                    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
-
-                    let (x, y) = unsafe {
-                        let mut point = POINT { x: 0, y: 0 };
-                        if GetCursorPos(&mut point).is_ok() {
-                            let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
-                            let mut monitor_info = MONITORINFO {
-                                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-                                ..Default::default()
-                            };
-
-                            if GetMonitorInfoW(monitor, &mut monitor_info).as_bool() {
-                                let work_area = monitor_info.rcWork;
-                                let screen_left = work_area.left;
-                                let screen_top = work_area.top;
-                                let window_width = 360;
-                                let window_height = 500;
-                                let mut final_x = point.x + 10;
-                                let mut final_y = point.y + 10;
-
-                                if final_x + window_width > work_area.right {
-                                    final_x = point.x - window_width - 10;
-                                    if final_x < screen_left {
-                                        final_x = work_area.right - window_width;
-                                    }
-                                }
-
-                                if final_y + window_height > work_area.bottom {
-                                    final_y = point.y - window_height - 10;
-                                    if final_y < screen_top {
-                                        final_y = work_area.bottom - window_height;
-                                    }
-                                }
-
-                                if final_x < screen_left {
-                                    final_x = screen_left;
-                                }
-
-                                if final_y < screen_top {
-                                    final_y = screen_top;
-                                }
-
-                                (final_x, final_y)
-                            } else {
-                                (point.x + 10, point.y + 10)
-                            }
-                        } else {
-                            (100, 100)
-                        }
-                    };
-
-                    use tauri::PhysicalPosition;
-                    let _ = window.set_position(PhysicalPosition::new(x, y));
-                    let _ = window.show();
-                }
+                let _ = window_controller::toggle_popup(&handle);
             });
         })
         .map_err(|e| format!("重新注册快捷键失败: {}", e))?;
@@ -412,43 +361,8 @@ async fn set_hotkey(app: tauri::AppHandle, hotkey: String) -> Result<(), String>
     Ok(())
 }
 
-fn write_to_clipboard(row: ClipboardItemRow) -> Result<(), arboard::Error> {
-    let mut clipboard = arboard::Clipboard::new()?;
-    match row.format.as_str() {
-        "image" => {
-            if let (Some(bytes), Some(width), Some(height)) =
-                (row.image, row.image_width, row.image_height)
-            {
-                let data = ImageData {
-                    width: width as usize,
-                    height: height as usize,
-                    bytes: Cow::Owned(bytes),
-                };
-                clipboard.set_image(data)?;
-            }
-        }
-        "html" => {
-            if let Some(html) = row.html {
-                clipboard.set_html(html, None)?;
-            } else if let Some(text) = row.text {
-                clipboard.set_text(text)?;
-            }
-        }
-        _ => {
-            if let Some(text) = row.text {
-                clipboard.set_text(text)?;
-            } else if let Some(file_path) = row.file_path {
-                clipboard.set_text(file_path)?;
-            } else if let Some(color) = row.color {
-                clipboard.set_text(color)?;
-            }
-        }
-    }
-    Ok(())
-}
-
 fn main() {
-    tauri::Builder::default()
+    let result = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
@@ -458,9 +372,10 @@ fn main() {
             clipboard::init_logger(log_path);
             let db_path = app_data_dir.join("clipboard.db");
             let pool = tauri::async_runtime::block_on(db::init_db(&db_path))?;
-            app.manage(AppState { db: pool.clone() });
+            let sdk = ClipboardSdk::new(pool);
+            app.manage(AppState { sdk: sdk.clone() });
             let handle = app.handle().clone();
-            clipboard::start_watcher(handle.clone(), pool);
+            clipboard::start_watcher(handle.clone(), sdk);
 
             // 首次运行时，默认开启自启动
             let first_run_flag = app_data_dir.join(".first_run");
@@ -563,10 +478,13 @@ fn main() {
             let config_dir = app.path().app_config_dir()?;
             std::fs::create_dir_all(&config_dir)?;
             let config_file = config_dir.join("hotkey.txt");
-            let hotkey_str = if config_file.exists() {
-                std::fs::read_to_string(config_file).unwrap_or("Alt+V".to_string())
+            let saved_hotkey = std::fs::read_to_string(&config_file).unwrap_or_default();
+            let hotkey_str = if saved_hotkey.trim().is_empty() || saved_hotkey.trim() == "Alt+V" {
+                let default_hotkey = "Win+V".to_string();
+                std::fs::write(&config_file, &default_hotkey)?;
+                default_hotkey
             } else {
-                "Alt+V".to_string()
+                saved_hotkey
             };
 
             // 解析快捷键字符串
@@ -577,82 +495,7 @@ fn main() {
                 keyboard_hook::register_hotkey(key_code, ctrl, alt, shift, win, move || {
                     let handle = app_handle.clone();
                     tauri::async_runtime::spawn(async move {
-                        if let Some(window) = handle.get_webview_window("popup") {
-                            // 获取光标位置并计算窗口位置
-                            use windows::Win32::Foundation::POINT;
-                            use windows::Win32::Graphics::Gdi::{
-                                GetMonitorInfoW, MonitorFromPoint, MONITORINFO,
-                                MONITOR_DEFAULTTONEAREST,
-                            };
-                            use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
-
-                            let (x, y) = unsafe {
-                                let mut point = POINT { x: 0, y: 0 };
-                                if GetCursorPos(&mut point).is_ok() {
-                                    // 获取光标所在的显示器信息
-                                    let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
-                                    let mut monitor_info = MONITORINFO {
-                                        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-                                        ..Default::default()
-                                    };
-
-                                    if GetMonitorInfoW(monitor, &mut monitor_info).as_bool() {
-                                        let work_area = monitor_info.rcWork;
-                                        let screen_left = work_area.left;
-                                        let screen_top = work_area.top;
-
-                                        // 窗口尺寸（包含边框）
-                                        let window_width = 360;
-                                        let window_height = 500;
-
-                                        // 计算初始位置（光标右下方）
-                                        let mut final_x = point.x + 10;
-                                        let mut final_y = point.y + 10;
-
-                                        // 检查右边界
-                                        if final_x + window_width > work_area.right {
-                                            // 放在光标左侧
-                                            final_x = point.x - window_width - 10;
-                                            // 如果左侧也放不下，紧贴右边界
-                                            if final_x < screen_left {
-                                                final_x = work_area.right - window_width;
-                                            }
-                                        }
-
-                                        // 检查底边界
-                                        if final_y + window_height > work_area.bottom {
-                                            // 放在光标上方
-                                            final_y = point.y - window_height - 10;
-                                            // 如果上方也放不下，紧贴底边界
-                                            if final_y < screen_top {
-                                                final_y = work_area.bottom - window_height;
-                                            }
-                                        }
-
-                                        // 确保不超出左边界
-                                        if final_x < screen_left {
-                                            final_x = screen_left;
-                                        }
-
-                                        // 确保不超出顶边界
-                                        if final_y < screen_top {
-                                            final_y = screen_top;
-                                        }
-
-                                        (final_x, final_y)
-                                    } else {
-                                        // 如果无法获取显示器信息，使用简单的偏移
-                                        (point.x + 10, point.y + 10)
-                                    }
-                                } else {
-                                    (100, 100)
-                                }
-                            };
-
-                            use tauri::PhysicalPosition;
-                            let _ = window.set_position(PhysicalPosition::new(x, y));
-                            let _ = window.show();
-                        }
+                        let _ = window_controller::toggle_popup(&handle);
                     });
                 })
                 .map_err(|e| format!("注册快捷键失败: {}", e))?;
@@ -683,8 +526,13 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_history,
             search_history,
+            get_history_page,
             set_clipboard,
             set_clipboard_and_paste,
+            get_clipboard_image,
+            save_clipboard_text,
+            save_clipboard_image,
+            hide_popup,
             clear_history,
             list_history_by_date,
             search_history_by_date,
@@ -692,6 +540,7 @@ fn main() {
             get_hotkey,
             set_hotkey,
             delete_history_item,
+            delete_history_items,
             delete_history_by_format,
             delete_history_by_category,
             delete_history_by_date,
@@ -699,6 +548,7 @@ fn main() {
             get_category_stats
         ])
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!());
+    keyboard_hook::unregister_hotkey();
+    result.expect("error while running tauri application");
 }

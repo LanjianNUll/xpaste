@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch } from "vue";
 import { ElMessage } from "element-plus";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { listen } from "@tauri-apps/api/event";
 import type { ClipboardItem, DateRangeType, DateRange } from "@/types";
-import { fetchHistoryByDate, setClipboardAndPaste } from "@/services/api";
+import {
+  fetchHistoryByDate,
+  hidePopup,
+  setClipboardAndPaste,
+  subscribeClipboardUpdates
+} from "@/services/api";
+import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
 
 const items = ref<ClipboardItem[]>([]);
 const loading = ref(false);
@@ -28,6 +32,7 @@ const formatLabel: Record<ClipboardItem["format"], string> = {
 
 const debounceHandle = ref<number | null>(null);
 const unlistenHandle = ref<(() => void) | null>(null);
+const unlistenFocusHandle = ref<(() => void) | null>(null);
 const popupBodyRef = ref<HTMLElement | null>(null);
 
 function getDateRange(type: DateRangeType): DateRange {
@@ -85,14 +90,6 @@ function scheduleLoad() {
 
 async function handleItemClick(item: ClipboardItem) {
   try {
-    // 先隐藏窗口，让焦点回到原输入框
-    const appWindow = getCurrentWebviewWindow();
-    await appWindow.hide();
-    
-    // 等待一小段时间确保窗口已隐藏
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    // 然后写入剪贴板并模拟粘贴
     await setClipboardAndPaste(item.id);
   } catch (err) {
     ElMessage.error("写入剪贴板失败。");
@@ -140,9 +137,15 @@ function shortPreview(item: ClipboardItem) {
   return item.text ?? item.html ?? "";
 }
 
-function imageSrc(item: ClipboardItem) {
-  if (!item.imageBase64) return "";
-  return `data:image/png;base64,${item.imageBase64}`;
+function handleWindowBlur() {
+  hidePopup().catch(() => undefined);
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    hidePopup().catch(() => undefined);
+  }
 }
 
 onMounted(async () => {
@@ -150,7 +153,7 @@ onMounted(async () => {
   
   // 监听剪贴板更新事件
   try {
-    const unlisten = await listen("clipboard://updated", () => {
+    const unlisten = await subscribeClipboardUpdates(() => {
       console.log("PopupWindow: clipboard://updated event received");
       loadHistory();
     });
@@ -160,26 +163,19 @@ onMounted(async () => {
     console.error("PopupWindow: clipboard://updated listener failed", err);
   }
   
-  const appWindow = getCurrentWebviewWindow();
-  
-  // 监听窗口失焦事件 - 使用 blur 事件
-  try {
-    window.addEventListener('blur', () => {
-      appWindow.hide();
-    });
-  } catch (err) {
-    console.error("Failed to setup blur listener", err);
-  }
+  window.addEventListener("blur", handleWindowBlur);
+  window.addEventListener("keydown", handleKeydown);
   
   // 监听窗口显示事件，滚动到顶部
   try {
-    const unlistenShow = await appWindow.listen('tauri://focus', () => {
+    const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    const unlistenShow = await getCurrentWebviewWindow().listen("tauri://focus", () => {
       console.log("PopupWindow: window focused, scrolling to top");
       if (popupBodyRef.value) {
         popupBodyRef.value.scrollTop = 0;
       }
     });
-    // 也可以在这里保存 unlistenShow 以便清理
+    unlistenFocusHandle.value = unlistenShow;
   } catch (err) {
     console.error("Failed to setup focus listener", err);
   }
@@ -189,6 +185,11 @@ onBeforeUnmount(() => {
   if (unlistenHandle.value) {
     unlistenHandle.value();
   }
+  if (unlistenFocusHandle.value) {
+    unlistenFocusHandle.value();
+  }
+  window.removeEventListener("blur", handleWindowBlur);
+  window.removeEventListener("keydown", handleKeydown);
 });
 
 watch(customDate, () => {
@@ -229,7 +230,7 @@ watch(customDate, () => {
           <span>{{ formatTime(item.createdAt) }}</span>
         </div>
         <div v-if="item.format === 'image'" class="history-image-preview">
-          <img :src="imageSrc(item)" class="thumbnail" alt="预览" />
+          <LazyClipboardImage :item-id="item.id" class="thumbnail" alt="预览" />
         </div>
         <div v-else class="history-preview" v-html="highlightText(shortPreview(item), '')" />
       </div>

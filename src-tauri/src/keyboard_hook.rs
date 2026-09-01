@@ -6,7 +6,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL,
-    WM_KEYDOWN, WM_SYSKEYDOWN,
+    WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 type HotkeyCallback = Arc<dyn Fn() + Send + Sync + 'static>;
@@ -18,6 +18,7 @@ struct HookState {
     alt: bool,
     shift: bool,
     win: bool,
+    key_down: bool,
 }
 
 // 使用 OnceLock 来存储全局状态
@@ -25,12 +26,23 @@ static HOOK_STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
 static HOOK_HANDLE: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 && (wparam.0 as u32 == WM_KEYDOWN || wparam.0 as u32 == WM_SYSKEYDOWN) {
+    if code >= 0 {
         let kb_struct = *(lparam.0 as *const KBDLLHOOKSTRUCT);
         let vk_code = kb_struct.vkCode;
 
         if let Some(state_mutex) = HOOK_STATE.get() {
-            if let Ok(state) = state_mutex.lock() {
+            if let Ok(mut state) = state_mutex.lock() {
+                let message = wparam.0 as u32;
+                if vk_code == state.key_code
+                    && state.key_down
+                    && (message == WM_KEYUP || message == WM_SYSKEYUP)
+                {
+                    state.key_down = false;
+                    return LRESULT(1);
+                }
+                if message != WM_KEYDOWN && message != WM_SYSKEYDOWN {
+                    return CallNextHookEx(None, code, wparam, lparam);
+                }
                 // 检查修饰键状态
                 let ctrl_pressed = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
                 let alt_pressed = (GetAsyncKeyState(VK_MENU.0 as i32) as u16 & 0x8000) != 0;
@@ -45,6 +57,10 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                     && shift_pressed == state.shift
                     && win_pressed == state.win
                 {
+                    if state.key_down {
+                        return LRESULT(1);
+                    }
+                    state.key_down = true;
                     // 触发回调
                     if let Some(callback) = &state.callback {
                         callback();
@@ -72,8 +88,26 @@ where
     F: Fn() + Send + Sync + 'static,
 {
     unsafe {
-        // 先清理旧的钩子
-        unregister_hotkey();
+        let callback: HotkeyCallback = Arc::new(callback);
+        if HOOK_HANDLE
+            .get()
+            .and_then(|handle| handle.lock().ok())
+            .and_then(|handle| *handle)
+            .is_some()
+        {
+            if let Some(state) = HOOK_STATE.get() {
+                *state.lock().map_err(|_| "快捷键状态更新失败".to_string())? = HookState {
+                    callback: Some(callback),
+                    key_code,
+                    ctrl,
+                    alt,
+                    shift,
+                    win,
+                    key_down: false,
+                };
+                return Ok(());
+            }
+        }
 
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0)
             .map_err(|e| format!("设置键盘钩子失败: {}", e))?;
@@ -88,12 +122,13 @@ where
 
         // 存储状态
         let state = HookState {
-            callback: Some(Arc::new(callback)),
+            callback: Some(callback),
             key_code,
             ctrl,
             alt,
             shift,
             win,
+            key_down: false,
         };
 
         if let Some(state_mutex) = HOOK_STATE.get() {
