@@ -29,10 +29,17 @@ pub fn toggle_popup(app: &AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     remember_foreground_window(&window);
 
-    let (x, y) = popup_position();
+    let (x, y) = popup_position(&window);
     window
         .set_position(tauri::PhysicalPosition::new(x, y))
         .map_err(|error| error.to_string())?;
+    // 跨越不同缩放比例的显示器后，窗口外框尺寸可能随 DPI 更新，再校正一次位置。
+    let (corrected_x, corrected_y) = popup_position(&window);
+    if (corrected_x, corrected_y) != (x, y) {
+        window
+            .set_position(tauri::PhysicalPosition::new(corrected_x, corrected_y))
+            .map_err(|error| error.to_string())?;
+    }
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())
 }
@@ -78,7 +85,7 @@ fn remember_foreground_window(window: &tauri::WebviewWindow) {
 }
 
 #[cfg(target_os = "windows")]
-fn popup_position() -> (i32, i32) {
+fn popup_position(window: &tauri::WebviewWindow) -> (i32, i32) {
     unsafe {
         let mut point = POINT::default();
         if GetCursorPos(&mut point).is_err() {
@@ -93,13 +100,22 @@ fn popup_position() -> (i32, i32) {
             return (point.x + 10, point.y + 10);
         }
         let area = info.rcWork;
-        let x = (point.x + 10).min(area.right - 360).max(area.left);
-        let y = (point.y + 10).min(area.bottom - 500).max(area.top);
+        // Tauri 配置中的宽高是逻辑像素，而 Win32 工作区和窗口位置使用物理像素。
+        // 读取真实外框尺寸，避免系统缩放后窗口越出显示器工作区。
+        let window_size = window
+            .outer_size()
+            .unwrap_or(tauri::PhysicalSize::new(360, 500));
+        let window_width = i32::try_from(window_size.width).unwrap_or(i32::MAX);
+        let window_height = i32::try_from(window_size.height).unwrap_or(i32::MAX);
+        let max_x = (area.right - window_width).max(area.left);
+        let max_y = (area.bottom - window_height).max(area.top);
+        let x = (point.x + 10).clamp(area.left, max_x);
+        let y = (point.y + 10).clamp(area.top, max_y);
         (x, y)
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn popup_position() -> (i32, i32) {
+fn popup_position(_window: &tauri::WebviewWindow) -> (i32, i32) {
     (100, 100)
 }

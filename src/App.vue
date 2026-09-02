@@ -340,7 +340,7 @@ watch(customDate, () => {
           <template v-else-if="selectedItem.format === 'color'">
             <div style="display: flex; align-items: center; gap: 12px;">
               <div
-                style="width: 42px; height: 42px; border-radius: 8px; border: 1px solid var(--border);"
+                style="width: 42px; height: 42px; border-radius: 2px; border: 1px solid var(--border);"
                 :style="{ background: selectedItem.color || selectedItem.text || '#fff' }"
               />
               <div class="preview-text">{{ selectedItem.color || selectedItem.text }}</div>

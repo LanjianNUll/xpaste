@@ -552,16 +552,16 @@ watch(() => filters.value.customDateRange, () => {
 
 <style scoped>
 .history-manager {
-  padding: 20px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 10px;
   height: 100%;
   overflow: hidden;
 }
 
 .filter-section {
-  margin-bottom: 8px;
+  margin-bottom: 2px;
   flex-shrink: 0;
 }
 
@@ -589,7 +589,7 @@ watch(() => filters.value.customDateRange, () => {
   display: flex;
   gap: 12px;
   align-items: center;
-  padding: 8px 0;
+  padding: 4px 2px;
   font-size: 14px;
   color: var(--el-text-color-regular);
   flex-wrap: wrap;
@@ -650,7 +650,7 @@ watch(() => filters.value.customDateRange, () => {
   max-width: 60px;
   max-height: 60px;
   object-fit: cover;
-  border-radius: 4px;
+  border-radius: 2px;
   border: 1px solid var(--el-border-color);
 }
 
@@ -668,7 +668,7 @@ watch(() => filters.value.customDateRange, () => {
 .color-block {
   width: 24px;
   height: 24px;
-  border-radius: 4px;
+  border-radius: 2px;
   border: 1px solid var(--el-border-color);
   flex-shrink: 0;
 }
@@ -696,7 +696,7 @@ watch(() => filters.value.customDateRange, () => {
 }
 
 :deep(.el-card__body) {
-  padding: 16px;
+  padding: 12px;
 }
 
 .image-preview-container {
@@ -704,15 +704,16 @@ watch(() => filters.value.customDateRange, () => {
   justify-content: center;
   align-items: center;
   min-height: 400px;
-  background: #f5f5f5;
-  border-radius: 8px;
+  background: #f3f3f3;
+  border: 1px solid var(--border);
+  border-radius: 2px;
 }
 
 .preview-full-image {
   max-width: 100%;
   max-height: 80vh;
   object-fit: contain;
-  border-radius: 4px;
+  border-radius: 2px;
 }
 
 :deep(.image-preview-dialog) {

@@ -246,6 +246,7 @@ watch(customDate, () => {
   flex-direction: column;
   background: var(--panel);
   overflow: hidden;
+  border-top: 1px solid #d6d6d6;
 }
 
 .popup-header {
@@ -256,11 +257,52 @@ watch(customDate, () => {
 .popup-body {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  padding: 8px;
+  background: #ffffff;
 }
 
 .date-tabs {
-  padding: 0 12px 8px;
+  padding: 0 12px 4px;
   border-bottom: 1px solid var(--border);
+  background: #fafafa;
+}
+
+.date-tabs :deep(.el-tabs__header) {
+  margin: 0;
+}
+
+.date-tabs :deep(.el-tabs__nav-wrap::after) {
+  height: 1px;
+  background: #dedede;
+}
+
+.date-tabs :deep(.el-tabs__item) {
+  height: 42px;
+  padding: 0 17px;
+  font-size: 14px;
+}
+
+.popup-body .history-item {
+  margin-bottom: 6px;
+  padding: 9px 10px;
+  background: #f7f7f7;
+}
+
+.popup-body .history-item:last-child {
+  margin-bottom: 0;
+}
+
+.popup-body .history-item:hover {
+  background: #e5f3fb;
+  border-color: #99c9ed;
+}
+
+.popup-body .history-meta {
+  margin-bottom: 4px;
+}
+
+.popup-body .history-preview {
+  font-size: 14px;
+  line-height: 1.45;
 }
 </style>
