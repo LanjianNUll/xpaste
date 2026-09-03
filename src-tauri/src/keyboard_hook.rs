@@ -2,7 +2,8 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+    VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL,
@@ -19,56 +20,101 @@ struct HookState {
     shift: bool,
     win: bool,
     key_down: bool,
+    mask_win_on_release: bool,
 }
 
 // 使用 OnceLock 来存储全局状态
 static HOOK_STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
 static HOOK_HANDLE: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
 
+/// 发送无实际功能的虚拟键，避免 Win 组合键释放后弹出开始菜单。
+fn mask_windows_key() {
+    const VK_MASK: VIRTUAL_KEY = VIRTUAL_KEY(0x07);
+    let inputs = [
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_MASK,
+                    ..Default::default()
+                },
+            },
+        },
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_MASK,
+                    dwFlags: KEYEVENTF_KEYUP,
+                    ..Default::default()
+                },
+            },
+        },
+    ];
+
+    unsafe {
+        let _ = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
         let kb_struct = *(lparam.0 as *const KBDLLHOOKSTRUCT);
         let vk_code = kb_struct.vkCode;
+        let message = wparam.0 as u32;
+        let mut callback = None;
+        let mut should_mask_windows_key = false;
+        let mut should_suppress = false;
 
         if let Some(state_mutex) = HOOK_STATE.get() {
             if let Ok(mut state) = state_mutex.lock() {
-                let message = wparam.0 as u32;
-                if vk_code == state.key_code
+                if (vk_code == VK_LWIN.0 as u32 || vk_code == VK_RWIN.0 as u32)
+                    && (message == WM_KEYUP || message == WM_SYSKEYUP)
+                    && state.mask_win_on_release
+                {
+                    state.mask_win_on_release = false;
+                    should_mask_windows_key = true;
+                } else if vk_code == state.key_code
                     && state.key_down
                     && (message == WM_KEYUP || message == WM_SYSKEYUP)
                 {
                     state.key_down = false;
-                    return LRESULT(1);
-                }
-                if message != WM_KEYDOWN && message != WM_SYSKEYDOWN {
-                    return CallNextHookEx(None, code, wparam, lparam);
-                }
-                // 检查修饰键状态
-                let ctrl_pressed = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
-                let alt_pressed = (GetAsyncKeyState(VK_MENU.0 as i32) as u16 & 0x8000) != 0;
-                let shift_pressed = (GetAsyncKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0;
-                let win_pressed = (GetAsyncKeyState(VK_LWIN.0 as i32) as u16 & 0x8000) != 0
-                    || (GetAsyncKeyState(VK_RWIN.0 as i32) as u16 & 0x8000) != 0;
+                    should_suppress = true;
+                } else if message == WM_KEYDOWN || message == WM_SYSKEYDOWN {
+                    // 检查修饰键状态
+                    let ctrl_pressed = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
+                    let alt_pressed = (GetAsyncKeyState(VK_MENU.0 as i32) as u16 & 0x8000) != 0;
+                    let shift_pressed = (GetAsyncKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0;
+                    let win_pressed = (GetAsyncKeyState(VK_LWIN.0 as i32) as u16 & 0x8000) != 0
+                        || (GetAsyncKeyState(VK_RWIN.0 as i32) as u16 & 0x8000) != 0;
 
-                // 检查是否匹配我们的快捷键
-                if vk_code == state.key_code
-                    && ctrl_pressed == state.ctrl
-                    && alt_pressed == state.alt
-                    && shift_pressed == state.shift
-                    && win_pressed == state.win
-                {
-                    if state.key_down {
-                        return LRESULT(1);
+                    // 检查是否匹配我们的快捷键
+                    if vk_code == state.key_code
+                        && ctrl_pressed == state.ctrl
+                        && alt_pressed == state.alt
+                        && shift_pressed == state.shift
+                        && win_pressed == state.win
+                    {
+                        should_suppress = true;
+                        if !state.key_down {
+                            state.key_down = true;
+                            state.mask_win_on_release = state.win;
+                            callback = state.callback.clone();
+                        }
                     }
-                    state.key_down = true;
-                    // 触发回调
-                    if let Some(callback) = &state.callback {
-                        callback();
-                    }
-                    // 返回 1 阻止系统进一步处理这个按键
-                    return LRESULT(1);
                 }
             }
+        }
+
+        // 必须在状态锁释放后发送输入并执行回调，防止钩子重入造成死锁。
+        if should_mask_windows_key {
+            mask_windows_key();
+        }
+        if let Some(callback) = callback {
+            callback();
+        }
+        if should_suppress {
+            return LRESULT(1);
         }
     }
 
@@ -104,6 +150,7 @@ where
                     shift,
                     win,
                     key_down: false,
+                    mask_win_on_release: false,
                 };
                 return Ok(());
             }
@@ -129,6 +176,7 @@ where
             shift,
             win,
             key_down: false,
+            mask_win_on_release: false,
         };
 
         if let Some(state_mutex) = HOOK_STATE.get() {
