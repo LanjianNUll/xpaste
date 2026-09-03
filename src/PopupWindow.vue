@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch } from "vue";
 import { ElMessage } from "element-plus";
+import { Search } from "@element-plus/icons-vue";
 import type { ClipboardItem, DateRangeType, DateRange } from "@/types";
 import {
-  fetchHistoryByDate,
+  fetchHistoryPage,
   hidePopup,
   setClipboardAndPaste,
   subscribeClipboardUpdates
@@ -14,6 +15,9 @@ const items = ref<ClipboardItem[]>([]);
 const loading = ref(false);
 const activeDate = ref<DateRangeType>("today");
 const customDate = ref<Date>(new Date());
+const keyword = ref("");
+const selectedType = ref("all");
+let loadRequestId = 0;
 
 const categoryLabel: Record<ClipboardItem["category"], string> = {
   link: "链接",
@@ -67,15 +71,28 @@ function getDateRange(type: DateRangeType): DateRange {
 }
 
 async function loadHistory() {
+  const requestId = ++loadRequestId;
   loading.value = true;
   try {
     const range = getDateRange(activeDate.value);
-    const data = await fetchHistoryByDate(range.startTs, range.endTs, '');
-    items.value = data;
+    const result = await fetchHistoryPage({
+      startTs: range.startTs,
+      endTs: range.endTs,
+      keyword: keyword.value,
+      formats: selectedType.value === "all" ? [] : [selectedType.value],
+      categories: [],
+      page: 1,
+      pageSize: 100
+    });
+    if (requestId === loadRequestId) {
+      items.value = result.items;
+    }
   } catch (err) {
     ElMessage.error("加载历史失败，请稍后重试。");
   } finally {
-    loading.value = false;
+    if (requestId === loadRequestId) {
+      loading.value = false;
+    }
   }
 }
 
@@ -201,6 +218,29 @@ watch(customDate, () => {
 
 <template>
   <div class="popup-shell">
+    <div class="search-toolbar">
+      <el-input
+        v-model="keyword"
+        :prefix-icon="Search"
+        placeholder="搜索剪贴板内容"
+        clearable
+        @input="scheduleLoad"
+      />
+      <el-select
+        v-model="selectedType"
+        aria-label="按类型筛选"
+        @change="loadHistory"
+      >
+        <el-option label="全部" value="all" />
+        <el-option label="文本" value="text" />
+        <el-option label="链接" value="link" />
+        <el-option label="图片" value="image" />
+        <el-option label="文件" value="file" />
+        <el-option label="HTML" value="html" />
+        <el-option label="颜色" value="color" />
+      </el-select>
+    </div>
+
     <div class="date-tabs">
       <el-tabs v-model="activeDate" @tab-change="handleDateChange" size="small">
         <el-tab-pane label="今天" name="today" />
@@ -227,12 +267,19 @@ watch(customDate, () => {
       >
         <div class="history-meta">
           <span>{{ categoryLabel[item.category] }} / {{ formatLabel[item.format] }}</span>
-          <span>{{ formatTime(item.createdAt) }}</span>
+          <span class="history-meta-right">
+            <span class="copy-count">× {{ item.copyCount }}</span>
+            <span>{{ formatTime(item.createdAt) }}</span>
+          </span>
         </div>
         <div v-if="item.format === 'image'" class="history-image-preview">
           <LazyClipboardImage :item-id="item.id" class="thumbnail" alt="预览" />
         </div>
-        <div v-else class="history-preview" v-html="highlightText(shortPreview(item), '')" />
+        <div
+          v-else
+          class="history-preview"
+          v-html="highlightText(shortPreview(item), keyword)"
+        />
       </div>
       <el-empty v-if="!loading && items.length === 0" description="暂无记录" />
     </div>
@@ -249,9 +296,18 @@ watch(customDate, () => {
   border-top: 1px solid #d6d6d6;
 }
 
-.popup-header {
-  padding: 12px;
+.search-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 118px;
+  gap: 8px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
+  background: #fafafa;
+}
+
+.search-toolbar :deep(.el-input__wrapper),
+.search-toolbar :deep(.el-select__wrapper) {
+  min-height: 32px;
 }
 
 .popup-body {
@@ -299,6 +355,20 @@ watch(customDate, () => {
 
 .popup-body .history-meta {
   margin-bottom: 4px;
+}
+
+.history-meta-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.copy-count {
+  padding: 1px 6px;
+  color: #1769aa;
+  font-weight: 600;
+  background: #e5f3fb;
+  border-radius: 10px;
 }
 
 .popup-body .history-preview {

@@ -76,7 +76,7 @@ fn start_polling_windows(app_handle: AppHandle, sdk: ClipboardSdk) {
         let mut last_hash: Option<u64> = None;
         loop {
             if let Some(captured) = capture_clipboard_with_retry() {
-                handle_captured(&mut last_hash, &app_handle, &sdk, captured);
+                handle_captured(&mut last_hash, &app_handle, &sdk, captured, true);
             }
             std::thread::sleep(Duration::from_millis(500));
         }
@@ -89,7 +89,7 @@ fn start_polling_async(app_handle: AppHandle, sdk: ClipboardSdk) {
         let mut last_hash: Option<u64> = None;
         loop {
             if let Some(captured) = capture_clipboard() {
-                handle_captured(&mut last_hash, &app_handle, &sdk, captured);
+                handle_captured(&mut last_hash, &app_handle, &sdk, captured, true);
             }
             sleep(Duration::from_millis(500)).await;
         }
@@ -101,8 +101,9 @@ fn handle_captured(
     app_handle: &AppHandle,
     sdk: &ClipboardSdk,
     captured: CapturedItem,
+    skip_unchanged: bool,
 ) {
-    if *last_hash == Some(captured.hash) {
+    if skip_unchanged && *last_hash == Some(captured.hash) {
         return;
     }
     *last_hash = Some(captured.hash);
@@ -111,16 +112,13 @@ fn handle_captured(
     let handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         match sdk.save_if_new(captured.item).await {
-            Ok(false) => {
-                log_line("clipboard: duplicate content, skipping insert");
-                return;
-            }
+            Ok(false) => log_line("clipboard: duplicate content, copy count incremented"),
             Err(err) => {
                 log_line(&format!("failed to insert clipboard item: {err}"));
                 eprintln!("failed to insert clipboard item: {err}");
                 return;
             }
-            Ok(true) => {}
+            Ok(true) => log_line("clipboard: new content inserted"),
         }
         match handle.emit("clipboard://updated", ()) {
             Ok(_) => log_line("clipboard: event emitted"),
@@ -281,7 +279,7 @@ fn run_clipboard_listener(app_handle: AppHandle, sdk: ClipboardSdk) -> windows::
             log_line("clipboard: WM_CLIPBOARDUPDATE received");
             let captured = capture_clipboard_with_retry();
             if let Some(captured) = captured {
-                handle_captured(&mut last_hash, &app_handle, &sdk, captured);
+                handle_captured(&mut last_hash, &app_handle, &sdk, captured, false);
             } else {
                 log_line("clipboard update received but no data captured");
                 eprintln!("clipboard update received but no data captured");

@@ -151,28 +151,9 @@ impl ClipboardSdk {
     }
 
     pub async fn save_if_new(&self, item: NewClipboardItem) -> Result<bool, String> {
-        if item.format != "image" {
-            if let Some(latest) = db::get_latest_summary(&self.pool)
-                .await
-                .map_err(database_error)?
-            {
-                let duplicate = latest.format == item.format
-                    && latest.category == item.category
-                    && latest.image_width == item.image_width
-                    && latest.image_height == item.image_height
-                    && latest.text == item.text
-                    && latest.html == item.html
-                    && latest.file_path == item.file_path
-                    && latest.color == item.color;
-                if duplicate {
-                    return Ok(false);
-                }
-            }
-        }
-        db::insert_item(&self.pool, item)
+        db::insert_or_increment_item(&self.pool, item)
             .await
-            .map_err(database_error)?;
-        Ok(true)
+            .map_err(database_error)
     }
 
     pub async fn image_base64(&self, id: i64, thumbnail: bool) -> Result<String, String> {

@@ -19,6 +19,7 @@ export interface ClipboardItem {
   imageWidth?: number | null;
   imageHeight?: number | null;
   createdAt: number;
+  copyCount: number;
 }
 
 export interface HistoryPage {

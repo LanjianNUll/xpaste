@@ -28,6 +28,7 @@ pub struct ClipboardItemSummaryRow {
     pub image_width: Option<i64>,
     pub image_height: Option<i64>,
     pub created_at: i64,
+    pub copy_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,6 +44,7 @@ pub struct ClipboardItem {
     pub image_width: Option<i64>,
     pub image_height: Option<i64>,
     pub created_at: i64,
+    pub copy_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,7 +96,48 @@ impl ClipboardItem {
             image_width: row.image_width,
             image_height: row.image_height,
             created_at: row.created_at,
+            copy_count: row.copy_count,
         }
+    }
+}
+
+/// 为剪贴板内容生成稳定指纹，用于快速定位可合并的重复记录。
+pub fn content_fingerprint(item: &NewClipboardItem) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    hash_optional_bytes(&mut hash, Some(item.format.as_bytes()));
+    hash_optional_bytes(&mut hash, Some(item.category.as_bytes()));
+    hash_optional_bytes(&mut hash, item.text.as_deref().map(str::as_bytes));
+    hash_optional_bytes(&mut hash, item.html.as_deref().map(str::as_bytes));
+    hash_optional_bytes(&mut hash, item.file_path.as_deref().map(str::as_bytes));
+    hash_optional_bytes(&mut hash, item.color.as_deref().map(str::as_bytes));
+    hash_optional_bytes(&mut hash, item.image.as_deref());
+    hash_optional_i64(&mut hash, item.image_width);
+    hash_optional_i64(&mut hash, item.image_height);
+    format!("{hash:016x}")
+}
+
+fn hash_optional_i64(hash: &mut u64, value: Option<i64>) {
+    match value {
+        Some(number) => hash_optional_bytes(hash, Some(&number.to_le_bytes())),
+        None => hash_optional_bytes(hash, None),
+    }
+}
+
+fn hash_optional_bytes(hash: &mut u64, value: Option<&[u8]>) {
+    match value {
+        Some(bytes) => {
+            hash_bytes(hash, &[1]);
+            hash_bytes(hash, &(bytes.len() as u64).to_le_bytes());
+            hash_bytes(hash, bytes);
+        }
+        None => hash_bytes(hash, &[0]),
+    }
+}
+
+fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(0x100000001b3);
     }
 }
 
