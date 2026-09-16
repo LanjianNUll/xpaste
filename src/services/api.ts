@@ -117,6 +117,25 @@ export const setClipboardAndPaste = clipboardSdk.pasteItem.bind(clipboardSdk);
 export const subscribeClipboardUpdates = clipboardSdk.subscribe.bind(clipboardSdk);
 export const hidePopup = clipboardSdk.hidePopup.bind(clipboardSdk);
 
+/**
+ * 快捷窗口场景下选中条目：仅当快捷窗口当前可见时才写入剪贴板并模拟 Ctrl+V。
+ * 若窗口已隐藏（例如从主窗口调用），则退化为仅写入剪贴板，避免误粘贴到其他应用。
+ */
+export async function pasteHistoryItem(id: number): Promise<void> {
+  let visible = true;
+  try {
+    const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    visible = await getCurrentWebviewWindow().isVisible();
+  } catch {
+    visible = true;
+  }
+  if (visible) {
+    await clipboardSdk.pasteItem(id);
+  } else {
+    await clipboardSdk.copyItem(id);
+  }
+}
+
 export async function getCursorPosition(): Promise<{ x: number; y: number }> {
   try {
     const [x, y] = await invoke<[number, number]>("get_cursor_position");
