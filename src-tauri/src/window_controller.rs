@@ -41,7 +41,12 @@ pub fn toggle_popup(app: &AppHandle) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
     }
     window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())
+    window.set_focus().map_err(|error| error.to_string())?;
+    // 通知前端做"每次打开都复位"（清空搜索词、聚焦搜索框、列表回顶）。
+    // 这里必须用广播 emit：前端 listen() 默认把目标注册为 Any，而 emit_to 走的是
+    // AnyLabel 标签匹配，Any 候选不会被命中，指定标签反而收不到事件。
+    let _ = tauri::Emitter::emit(app, "popup://shown", ());
+    Ok(())
 }
 
 pub fn hide_popup(app: &AppHandle) -> Result<(), String> {

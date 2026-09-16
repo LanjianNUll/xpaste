@@ -21,6 +21,7 @@ export interface ClipboardSdk {
   getCategoryStats(): Promise<Array<[string, number]>>;
   clear(): Promise<void>;
   subscribe(listener: () => void): Promise<() => void>;
+  subscribePopupShown(listener: () => void): Promise<() => void>;
   hidePopup(): Promise<void>;
 }
 
@@ -99,6 +100,14 @@ class TauriClipboardSdk implements ClipboardSdk {
     return await listen("clipboard://updated", listener);
   }
 
+  /**
+   * 快捷窗口被显示（切换为可见并取得焦点）时触发。Rust 侧用广播 emit 投递，
+   * 因为前端 listen 默认注册为 Any 目标，emit_to 指定标签不会命中。
+   */
+  async subscribePopupShown(listener: () => void): Promise<() => void> {
+    return await listen("popup://shown", listener);
+  }
+
   async hidePopup(): Promise<void> {
     await invoke<void>("hide_popup");
   }
@@ -115,6 +124,7 @@ export const saveClipboardImage = clipboardSdk.saveImage.bind(clipboardSdk);
 export const setClipboard = clipboardSdk.copyItem.bind(clipboardSdk);
 export const setClipboardAndPaste = clipboardSdk.pasteItem.bind(clipboardSdk);
 export const subscribeClipboardUpdates = clipboardSdk.subscribe.bind(clipboardSdk);
+export const subscribePopupShown = clipboardSdk.subscribePopupShown.bind(clipboardSdk);
 export const hidePopup = clipboardSdk.hidePopup.bind(clipboardSdk);
 
 /**

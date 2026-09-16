@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
 import { ElMessage } from "element-plus";
 import { Search } from "@element-plus/icons-vue";
 import type { ClipboardItem, DateRangeType, DateRange } from "@/types";
@@ -8,7 +8,8 @@ import {
   getClipboardImage,
   hidePopup,
   pasteHistoryItem,
-  subscribeClipboardUpdates
+  subscribeClipboardUpdates,
+  subscribePopupShown
 } from "@/services/api";
 import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
 
@@ -40,7 +41,24 @@ const formatLabel: Record<ClipboardItem["format"], string> = {
 const debounceHandle = ref<number | null>(null);
 const unlistenHandle = ref<(() => void) | null>(null);
 const unlistenFocusHandle = ref<(() => void) | null>(null);
+const unlistenShownHandle = ref<(() => void) | null>(null);
 const popupBodyRef = ref<HTMLElement | null>(null);
+const searchInputRef = ref<{ focus: () => void } | null>(null);
+
+// 历史搜索：只在"用某关键词搜到结果并真的粘贴了该结果"之后才入库，
+// 所以历史里都是真正用过的词，不会堆满无效搜索。
+const SEARCH_HISTORY_KEY = "xpaste.searchHistory";
+const SEARCH_HISTORY_LIMIT = 20;
+const SEARCH_HISTORY_COLLAPSED_LIMIT = 3;
+
+const searchHistory = ref<string[]>([]);
+const historyExpanded = ref(false);
+
+const visibleSearchHistory = computed(() =>
+  historyExpanded.value
+    ? searchHistory.value
+    : searchHistory.value.slice(0, SEARCH_HISTORY_COLLAPSED_LIMIT)
+);
 
 // 图片放大预览：快捷窗口只有 360x500，因此支持滚轮缩放与拖拽平移。
 const previewVisible = ref(false);
@@ -174,8 +192,11 @@ function scheduleLoad() {
 async function handleItemClick(item: ClipboardItem) {
   if (pasting.value) return;
   pasting.value = true;
+  const searchKeyword = keyword.value.trim();
   try {
     await pasteHistoryItem(item.id);
+    // 粘贴成功才说明这次搜索确实有用，此时把关键词记进历史搜索。
+    recordSearchKeyword(searchKeyword);
   } catch (err) {
     ElMessage.error("写入剪贴板失败。");
   } finally {
@@ -229,6 +250,83 @@ function handleWindowBlur() {
   hidePopup().catch(() => undefined);
 }
 
+function loadSearchHistory() {
+  try {
+    const raw = window.localStorage.getItem(SEARCH_HISTORY_KEY);
+    if (!raw) return;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return;
+    searchHistory.value = parsed
+      .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      .slice(0, SEARCH_HISTORY_LIMIT);
+  } catch {
+    searchHistory.value = [];
+  }
+}
+
+function persistSearchHistory() {
+  try {
+    window.localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(searchHistory.value));
+  } catch {
+    // localStorage 不可用时静默降级，不影响搜索本身
+  }
+}
+
+function recordSearchKeyword(rawKeyword: string) {
+  const value = rawKeyword.trim();
+  if (!value) return;
+  searchHistory.value = [
+    value,
+    ...searchHistory.value.filter((entry) => entry !== value)
+  ].slice(0, SEARCH_HISTORY_LIMIT);
+  persistSearchHistory();
+}
+
+function clearSearchHistory() {
+  searchHistory.value = [];
+  historyExpanded.value = false;
+  persistSearchHistory();
+}
+
+function applySearchHistory(value: string) {
+  historyExpanded.value = false;
+  keyword.value = value;
+  loadHistory();
+  // 点完历史项把焦点交回搜索框，方便继续改词或直接 ↑↓ + Enter 粘贴。
+  focusSearchInput();
+}
+
+function focusSearchInput() {
+  searchInputRef.value?.focus();
+}
+
+function isTypingTarget(target: unknown) {
+  const element = target as HTMLElement | null;
+  if (!element) return false;
+  const tag = element.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || element.isContentEditable;
+}
+
+/**
+ * 快捷窗口每次显示时复位：清空搜索词、收起历史搜索、关闭图片预览、
+ * 列表回顶并重新加载，最后把焦点交给搜索框，让用户可以直接打字搜索。
+ */
+async function handlePopupShown() {
+  if (debounceHandle.value != null) {
+    window.clearTimeout(debounceHandle.value);
+    debounceHandle.value = null;
+  }
+  keyword.value = "";
+  historyExpanded.value = false;
+  closeImagePreview();
+  await loadHistory();
+  if (popupBodyRef.value) {
+    popupBodyRef.value.scrollTop = 0;
+  }
+  await nextTick();
+  focusSearchInput();
+}
+
 function scrollActiveIntoView() {
   requestAnimationFrame(() => {
     const body = popupBodyRef.value;
@@ -269,9 +367,13 @@ function handleKeydown(event: KeyboardEvent) {
 
   if (key === "Escape") {
     event.preventDefault();
-    // 预览状态下 Esc 先关闭预览，再次按下才隐藏快捷窗口。
+    // 优先级：图片预览 → 展开的历史搜索 → 隐藏快捷窗口。
     if (previewVisible.value) {
       closeImagePreview();
+      return;
+    }
+    if (historyExpanded.value) {
+      historyExpanded.value = false;
       return;
     }
     hidePopup().catch(() => undefined);
@@ -282,6 +384,12 @@ function handleKeydown(event: KeyboardEvent) {
   if (previewVisible.value) return;
 
   if (isComposing) return;
+
+  // 兜底：系统焦点还没落到搜索框时，敲下的第一个字符就把焦点交给搜索框，
+  // 避免"需要先用鼠标点一下才能搜索"。
+  if (!isTypingTarget(event.target) && key.length === 1 && key !== " ") {
+    focusSearchInput();
+  }
 
   if (key === "ArrowDown") {
     event.preventDefault();
@@ -302,6 +410,7 @@ function handleKeydown(event: KeyboardEvent) {
 }
 
 onMounted(async () => {
+  loadSearchHistory();
   await loadHistory();
   
   // 监听剪贴板更新事件
@@ -314,6 +423,15 @@ onMounted(async () => {
     console.log("PopupWindow: clipboard://updated listener registered");
   } catch (err) {
     console.error("PopupWindow: clipboard://updated listener failed", err);
+  }
+
+  // 窗口每次被显示时复位搜索状态（清空搜索词并聚焦搜索框）
+  try {
+    unlistenShownHandle.value = await subscribePopupShown(() => {
+      handlePopupShown().catch(() => undefined);
+    });
+  } catch (err) {
+    console.error("PopupWindow: popup://shown listener failed", err);
   }
   
   window.addEventListener("blur", handleWindowBlur);
@@ -341,6 +459,9 @@ onBeforeUnmount(() => {
   if (unlistenFocusHandle.value) {
     unlistenFocusHandle.value();
   }
+  if (unlistenShownHandle.value) {
+    unlistenShownHandle.value();
+  }
   window.removeEventListener("blur", handleWindowBlur);
   window.removeEventListener("keydown", handleKeydown);
 });
@@ -356,6 +477,7 @@ watch(customDate, () => {
   <div class="popup-shell">
     <div class="search-toolbar">
       <el-input
+        ref="searchInputRef"
         v-model="keyword"
         :prefix-icon="Search"
         placeholder="搜索剪贴板内容"
@@ -375,6 +497,37 @@ watch(customDate, () => {
         <el-option label="HTML" value="html" />
         <el-option label="颜色" value="color" />
       </el-select>
+    </div>
+
+    <div v-if="searchHistory.length > 0" class="search-history">
+      <div class="search-history-header">
+        <span class="search-history-title">历史搜索</span>
+        <span class="search-history-actions">
+          <button
+            v-if="searchHistory.length > SEARCH_HISTORY_COLLAPSED_LIMIT"
+            type="button"
+            class="search-history-action"
+            @click="historyExpanded = !historyExpanded"
+          >
+            {{ historyExpanded ? "收起" : "展开" }}
+          </button>
+          <button type="button" class="search-history-action" @click="clearSearchHistory">
+            清空
+          </button>
+        </span>
+      </div>
+      <div class="search-history-list" :class="{ 'is-expanded': historyExpanded }">
+        <button
+          v-for="entry in visibleSearchHistory"
+          :key="entry"
+          type="button"
+          class="search-history-item"
+          :title="entry"
+          @click="applySearchHistory(entry)"
+        >
+          {{ entry }}
+        </button>
+      </div>
     </div>
 
     <div class="date-tabs">
@@ -408,15 +561,20 @@ watch(customDate, () => {
           <span class="history-meta-right">
             <span class="copy-count">× {{ item.copyCount }}</span>
             <span>{{ formatTime(item.createdAt) }}</span>
+            <!-- 预览入口独立成文字按钮，图片本体不再拦截点击，保证整条 item 点击即粘贴 -->
+            <button
+              v-if="item.format === 'image'"
+              type="button"
+              class="preview-text-btn"
+              title="放大预览图片"
+              @click.stop="openImagePreview(item)"
+            >
+              预览
+            </button>
           </span>
         </div>
-        <div
-          v-if="item.format === 'image'"
-          class="history-image-preview zoomable"
-          @click.stop="openImagePreview(item)"
-        >
+        <div v-if="item.format === 'image'" class="history-image-preview">
           <LazyClipboardImage :item-id="item.id" class="thumbnail" alt="预览" />
-          <span class="zoom-hint">点击放大</span>
         </div>
         <div
           v-else
@@ -487,6 +645,82 @@ watch(customDate, () => {
   min-height: 32px;
 }
 
+.search-history {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: #fafafa;
+}
+
+.search-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.search-history-title {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.search-history-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.search-history-action {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.search-history-action:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.search-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 展开后固定在区域高度内滚动，不把下面的剪贴板列表挤没 */
+.search-history-list.is-expanded {
+  max-height: 120px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.search-history-item {
+  display: block;
+  width: 100%;
+  height: 24px;
+  padding: 3px 6px;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 18px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.search-history-item:hover {
+  background: #e5f3fb;
+  color: var(--accent);
+}
+
 .popup-body {
   flex: 1;
   overflow-y: auto;
@@ -544,6 +778,27 @@ watch(customDate, () => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
+}
+
+.preview-text-btn {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 1.4;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.preview-text-btn:hover {
+  color: var(--accent-hover);
+}
+
+.preview-text-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .copy-count {
@@ -557,17 +812,6 @@ watch(customDate, () => {
 .popup-body .history-preview {
   font-size: 14px;
   line-height: 1.45;
-}
-
-.history-image-preview.zoomable {
-  flex-direction: column;
-  gap: 3px;
-  cursor: zoom-in;
-}
-
-.zoom-hint {
-  font-size: 11px;
-  color: var(--muted);
 }
 
 .popup-footer {
