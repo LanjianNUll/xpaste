@@ -51,7 +51,8 @@ const categoryLabel: Record<string, string> = {
   link: "链接",
   image: "图片",
   text: "文本",
-  file: "文件"
+  file: "文件",
+  folder: "文件夹"
 };
 
 function getDateRange(type: DateRangeType): DateRange | null {
@@ -173,15 +174,31 @@ function shortPreview(item: ClipboardItem) {
     return "[图片]";
   }
   if (item.format === "file") {
-    const path = item.filePath ?? "[文件]";
-    const fileName = path.split(/[\\/]/).pop();
-    return fileName ?? path;
+    return filePreview(item);
   }
   if (item.format === "color") {
     return item.color ?? item.text ?? "[颜色]";
   }
   const text = item.text ?? item.html ?? "";
   return text.length > 100 ? text.substring(0, 100) + "..." : text;
+}
+
+/**
+ * 文件/文件夹记录的内容预览：展示完整路径（不再只显示文件名）；
+ * 多选时展示首个路径并标注数量，粘贴时会写入全部路径。
+ */
+function filePreview(item: ClipboardItem) {
+  const paths = (item.text ?? item.filePath ?? "")
+    .split(/\r?\n/)
+    .map((path) => path.trim())
+    .filter(Boolean);
+  if (paths.length === 0) {
+    return "[文件]";
+  }
+  if (paths.length === 1) {
+    return paths[0];
+  }
+  return `${paths[0]} 等 ${paths.length} 个路径`;
 }
 
 async function openImagePreview(item: ClipboardItem) {
@@ -477,7 +494,7 @@ watch(() => filters.value.customDateRange, () => {
             size="small" 
             :type="row.category === 'link' ? 'success' : 'primary'"
           >
-            {{ row.category === 'link' ? '链接' : formatLabel[row.format] }}
+            {{ row.category === 'link' ? '链接' : row.category === 'folder' ? '文件夹' : formatLabel[row.format] }}
           </el-tag>
         </template>
       </el-table-column>

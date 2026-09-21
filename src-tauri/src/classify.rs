@@ -17,9 +17,15 @@ pub fn classify_text(input: &str) -> TextClassification {
     }
 
     if looks_like_file_path(trimmed) {
+        // 路径指向目录时归为"文件夹"，与 HDROP 捕获的分类保持一致，避免重复入库。
+        let category = if std::path::Path::new(trimmed).is_dir() {
+            "folder"
+        } else {
+            "file"
+        };
         return TextClassification {
             format: "file".to_string(),
-            category: "file".to_string(),
+            category: category.to_string(),
             color: None,
             file_path: Some(trimmed.to_string()),
         };

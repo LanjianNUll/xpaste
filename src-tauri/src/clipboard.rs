@@ -2,7 +2,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -129,7 +129,111 @@ fn handle_captured(
 
 const MAX_IMAGE_SIZE: usize = 20 * 1024 * 1024;
 
+/// Windows 文件/文件夹复制使用的剪贴板格式（CF_HDROP）。
+#[cfg(target_os = "windows")]
+const CF_HDROP: u32 = 15;
+
+/// 读取剪贴板里的文件/文件夹路径列表（CF_HDROP）。
+/// 在资源管理器里复制文件、文件夹时，系统写入的是 HDROP 而不是文本，
+/// 因此必须显式读取该格式，才能把"复制了什么文件"记录进历史。
+#[cfg(target_os = "windows")]
+fn read_clipboard_file_paths() -> Option<Vec<String>> {
+    use std::ptr;
+
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    };
+    use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+
+    // 剪贴板必须成对开关，读取结果先算完再统一关闭。
+    let paths = unsafe {
+        if OpenClipboard(HWND(ptr::null_mut())).is_err() {
+            None
+        } else if IsClipboardFormatAvailable(CF_HDROP).is_err() {
+            None
+        } else {
+            match GetClipboardData(CF_HDROP) {
+                Ok(handle) => {
+                    let drop = HDROP(handle.0);
+                    let count = DragQueryFileW(drop, u32::MAX, None);
+                    let mut result = Vec::with_capacity(count as usize);
+                    for index in 0..count {
+                        let required = DragQueryFileW(drop, index, None) as usize;
+                        if required == 0 {
+                            continue;
+                        }
+                        let mut buffer = vec![0u16; required + 1];
+                        let copied = DragQueryFileW(drop, index, Some(&mut buffer[..])) as usize;
+                        if copied == 0 {
+                            continue;
+                        }
+                        result.push(String::from_utf16_lossy(&buffer[..copied]));
+                    }
+                    Some(result)
+                }
+                Err(err) => {
+                    log_line(&format!("clipboard: GetClipboardData(CF_HDROP) failed: {err}"));
+                    None
+                }
+            }
+        }
+    };
+
+    unsafe {
+        let _ = CloseClipboard();
+    }
+
+    paths
+}
+
+/// 把文件/文件夹路径封装成一条历史记录：粘贴时写回的就是完整路径。
+fn build_file_capture(paths: Vec<String>) -> Option<CapturedItem> {
+    let normalized: Vec<String> = paths
+        .into_iter()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+        .collect();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    // 全部是目录时按"文件夹"归类，便于界面区分文件与文件夹。
+    let is_folder = normalized.iter().all(|path| Path::new(path).is_dir());
+    // 多选时把每个路径各占一行，粘贴出来就是一组完整路径。
+    let joined = normalized.join("\r\n");
+    let hash = hash_text(&joined);
+    log_line(&format!(
+        "clipboard: file drop captured {} item(s), folder={}",
+        normalized.len(),
+        is_folder
+    ));
+
+    let item = NewClipboardItem {
+        format: "file".to_string(),
+        category: if is_folder { "folder" } else { "file" }.to_string(),
+        text: Some(joined),
+        html: None,
+        file_path: Some(normalized[0].clone()),
+        color: None,
+        image: None,
+        image_width: None,
+        image_height: None,
+        created_at: now_ms(),
+    };
+    Some(CapturedItem { item, hash })
+}
+
 fn capture_clipboard() -> Option<CapturedItem> {
+    // Windows 下优先识别文件/文件夹复制：HDROP 才是权威来源，
+    // 文本只是部分程序顺带写入的兼容格式。
+    #[cfg(target_os = "windows")]
+    if let Some(paths) = read_clipboard_file_paths() {
+        if let Some(captured) = build_file_capture(paths) {
+            return Some(captured);
+        }
+    }
+
     let mut clipboard = match Clipboard::new() {
         Ok(clipboard) => clipboard,
         Err(err) => {

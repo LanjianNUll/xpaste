@@ -1,5 +1,5 @@
 ﻿export type ClipboardFormat = "text" | "image" | "html" | "file" | "color";
-export type ClipboardCategory = "link" | "image" | "text" | "file";
+export type ClipboardCategory = "link" | "image" | "text" | "file" | "folder";
 
 export type DateRangeType = "all" | "today" | "yesterday" | "beforeYesterday" | "custom" | "customRange";
 

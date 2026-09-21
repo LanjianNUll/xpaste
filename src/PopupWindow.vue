@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
 import { ElMessage } from "element-plus";
-import { Search } from "@element-plus/icons-vue";
+import { Search, Filter, ArrowDown } from "@element-plus/icons-vue";
 import type { ClipboardItem, DateRangeType, DateRange } from "@/types";
 import {
   fetchHistoryPage,
@@ -27,7 +27,8 @@ const categoryLabel: Record<ClipboardItem["category"], string> = {
   link: "链接",
   image: "图片",
   text: "文本",
-  file: "文件"
+  file: "文件",
+  folder: "文件夹"
 };
 
 const formatLabel: Record<ClipboardItem["format"], string> = {
@@ -59,6 +60,65 @@ const visibleSearchHistory = computed(() =>
     ? searchHistory.value
     : searchHistory.value.slice(0, SEARCH_HISTORY_COLLAPSED_LIMIT)
 );
+
+// 筛选面板：默认收起，避免类型/日期/历史搜索长期占用列表高度。
+// 只有搜索框常驻，点击右侧"筛选"按钮才展开其余筛选条件。
+const filterExpanded = ref(false);
+
+// 日期分段按钮（替代原来的 el-tabs，高度从 46px 压到 28px）
+const dateOptions: { label: string; value: DateRangeType }[] = [
+  { label: "今天", value: "today" },
+  { label: "昨天", value: "yesterday" },
+  { label: "前天", value: "beforeYesterday" },
+  { label: "自定义", value: "custom" }
+];
+
+const typeLabelMap: Record<string, string> = {
+  all: "全部类型",
+  text: "文本",
+  link: "链接",
+  image: "图片",
+  file: "文件",
+  html: "HTML",
+  color: "颜色"
+};
+
+// 生效中的非默认筛选条件数量，用于在筛选按钮上做角标提示
+const activeFilterCount = computed(() => {
+  let count = 0;
+  if (selectedType.value !== "all") count += 1;
+  if (activeDate.value !== "today") count += 1;
+  return count;
+});
+
+// 底部常驻摘要：筛选面板收起时也能一眼看出当前在看哪个范围
+const filterSummary = computed(() => {
+  const parts: string[] = [];
+  parts.push(
+    activeDate.value === "custom"
+      ? `${customDate.value.getMonth() + 1}月${customDate.value.getDate()}日`
+      : (dateOptions.find((option) => option.value === activeDate.value)?.label ?? "今天")
+  );
+  parts.push(typeLabelMap[selectedType.value] ?? "全部类型");
+  const trimmedKeyword = keyword.value.trim();
+  if (trimmedKeyword) {
+    parts.push(`包含“${trimmedKeyword}”`);
+  }
+  return parts.join(" · ");
+});
+
+function toggleFilterPanel() {
+  filterExpanded.value = !filterExpanded.value;
+}
+
+function closeFilterPanel() {
+  filterExpanded.value = false;
+}
+
+function selectDate(value: DateRangeType) {
+  activeDate.value = value;
+  loadHistory();
+}
 
 // 图片放大预览：快捷窗口只有 360x500，因此支持滚轮缩放与拖拽平移。
 const previewVisible = ref(false);
@@ -204,10 +264,6 @@ async function handleItemClick(item: ClipboardItem) {
   }
 }
 
-function handleDateChange() {
-  loadHistory();
-}
-
 function formatTime(ts: number) {
   const date = new Date(ts);
   return `${date.getHours().toString().padStart(2, "0")}:${date
@@ -237,12 +293,38 @@ function shortPreview(item: ClipboardItem) {
     return "[图片]";
   }
   if (item.format === "file") {
-    return item.filePath ?? "[文件]";
+    return filePreview(item);
   }
   if (item.format === "color") {
     return item.color ?? item.text ?? "[颜色]";
   }
   return item.text ?? item.html ?? "";
+}
+
+/**
+ * 文件/文件夹记录的内容预览：始终展示完整路径；
+ * 多选时展示首个路径并标注数量（粘贴时会写入全部路径）。
+ */
+function filePreview(item: ClipboardItem) {
+  const paths = (item.text ?? item.filePath ?? "")
+    .split(/\r?\n/)
+    .map((path) => path.trim())
+    .filter(Boolean);
+  if (paths.length === 0) {
+    return "[文件]";
+  }
+  if (paths.length === 1) {
+    return paths[0];
+  }
+  return `${paths[0]} 等 ${paths.length} 个路径`;
+}
+
+/** 类型文案：文件夹单独展示，其余沿用「分类 / 格式」 */
+function itemTypeLabel(item: ClipboardItem) {
+  if (item.category === "folder") {
+    return "文件夹";
+  }
+  return `${categoryLabel[item.category]} / ${formatLabel[item.format]}`;
 }
 
 function handleWindowBlur() {
@@ -318,6 +400,8 @@ async function handlePopupShown() {
   }
   keyword.value = "";
   historyExpanded.value = false;
+  // 每次弹出都回到收起状态，保证列表拿到最大可视高度
+  closeFilterPanel();
   closeImagePreview();
   await loadHistory();
   if (popupBodyRef.value) {
@@ -367,9 +451,13 @@ function handleKeydown(event: KeyboardEvent) {
 
   if (key === "Escape") {
     event.preventDefault();
-    // 优先级：图片预览 → 展开的历史搜索 → 隐藏快捷窗口。
+    // 优先级：图片预览 → 筛选面板 → 展开的历史搜索 → 隐藏快捷窗口。
     if (previewVisible.value) {
       closeImagePreview();
+      return;
+    }
+    if (filterExpanded.value) {
+      closeFilterPanel();
       return;
     }
     if (historyExpanded.value) {
@@ -475,76 +563,108 @@ watch(customDate, () => {
 
 <template>
   <div class="popup-shell">
+    <!-- 常驻单行：搜索框 + 筛选按钮，其余筛选条件全部收进下方面板 -->
     <div class="search-toolbar">
       <el-input
         ref="searchInputRef"
         v-model="keyword"
         :prefix-icon="Search"
         placeholder="搜索剪贴板内容"
+        size="small"
         clearable
         @input="scheduleLoad"
       />
-      <el-select
-        v-model="selectedType"
-        aria-label="按类型筛选"
-        @change="loadHistory"
+      <button
+        type="button"
+        class="filter-toggle"
+        :class="{ 'is-active': filterExpanded, 'is-filtered': activeFilterCount > 0 }"
+        :title="filterExpanded ? '收起筛选条件' : '展开类型、时间等筛选条件'"
+        @click="toggleFilterPanel"
       >
-        <el-option label="全部" value="all" />
-        <el-option label="文本" value="text" />
-        <el-option label="链接" value="link" />
-        <el-option label="图片" value="image" />
-        <el-option label="文件" value="file" />
-        <el-option label="HTML" value="html" />
-        <el-option label="颜色" value="color" />
-      </el-select>
+        <el-icon><Filter /></el-icon>
+        <span>筛选</span>
+        <span v-if="activeFilterCount > 0" class="filter-badge">{{ activeFilterCount }}</span>
+        <el-icon class="filter-arrow" :class="{ 'is-open': filterExpanded }"><ArrowDown /></el-icon>
+      </button>
     </div>
 
-    <div v-if="searchHistory.length > 0" class="search-history">
-      <div class="search-history-header">
-        <span class="search-history-title">历史搜索</span>
-        <span class="search-history-actions">
-          <button
-            v-if="searchHistory.length > SEARCH_HISTORY_COLLAPSED_LIMIT"
-            type="button"
-            class="search-history-action"
-            @click="historyExpanded = !historyExpanded"
-          >
-            {{ historyExpanded ? "收起" : "展开" }}
-          </button>
-          <button type="button" class="search-history-action" @click="clearSearchHistory">
-            清空
-          </button>
-        </span>
-      </div>
-      <div class="search-history-list" :class="{ 'is-expanded': historyExpanded }">
-        <button
-          v-for="entry in visibleSearchHistory"
-          :key="entry"
-          type="button"
-          class="search-history-item"
-          :title="entry"
-          @click="applySearchHistory(entry)"
+    <div v-if="filterExpanded" class="filter-panel">
+      <div class="filter-row">
+        <span class="filter-label">类型</span>
+        <el-select
+          v-model="selectedType"
+          size="small"
+          class="filter-control"
+          aria-label="按类型筛选"
+          @change="loadHistory"
         >
-          {{ entry }}
-        </button>
+          <el-option label="全部" value="all" />
+          <el-option label="文本" value="text" />
+          <el-option label="链接" value="link" />
+          <el-option label="图片" value="image" />
+          <el-option label="文件" value="file" />
+          <el-option label="HTML" value="html" />
+          <el-option label="颜色" value="color" />
+        </el-select>
       </div>
-    </div>
 
-    <div class="date-tabs">
-      <el-tabs v-model="activeDate" @tab-change="handleDateChange" size="small">
-        <el-tab-pane label="今天" name="today" />
-        <el-tab-pane label="昨天" name="yesterday" />
-        <el-tab-pane label="前天" name="beforeYesterday" />
-        <el-tab-pane label="自定义" name="custom">
-          <el-date-picker
-            v-model="customDate"
-            type="date"
-            placeholder="选择日期"
-            size="small"
-            style="width: 100%; margin-top: 8px"
-          />
-        </el-tab-pane>
-      </el-tabs>
+      <div class="filter-row">
+        <span class="filter-label">时间</span>
+        <div class="date-segments">
+          <button
+            v-for="option in dateOptions"
+            :key="option.value"
+            type="button"
+            class="date-segment"
+            :class="{ 'is-active': activeDate === option.value }"
+            @click="selectDate(option.value)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="activeDate === 'custom'" class="filter-row">
+        <span class="filter-label">日期</span>
+        <el-date-picker
+          v-model="customDate"
+          type="date"
+          placeholder="选择日期"
+          size="small"
+          class="filter-control"
+        />
+      </div>
+
+      <div v-if="searchHistory.length > 0" class="filter-history">
+        <div class="search-history-header">
+          <span class="search-history-title">历史搜索</span>
+          <span class="search-history-actions">
+            <button
+              v-if="searchHistory.length > SEARCH_HISTORY_COLLAPSED_LIMIT"
+              type="button"
+              class="search-history-action"
+              @click="historyExpanded = !historyExpanded"
+            >
+              {{ historyExpanded ? "收起" : "展开" }}
+            </button>
+            <button type="button" class="search-history-action" @click="clearSearchHistory">
+              清空
+            </button>
+          </span>
+        </div>
+        <div class="search-history-list" :class="{ 'is-expanded': historyExpanded }">
+          <button
+            v-for="entry in visibleSearchHistory"
+            :key="entry"
+            type="button"
+            class="search-history-item"
+            :title="entry"
+            @click="applySearchHistory(entry)"
+          >
+            {{ entry }}
+          </button>
+        </div>
+      </div>
     </div>
 
     <div class="popup-body" ref="popupBodyRef">
@@ -557,7 +677,7 @@ watch(customDate, () => {
         @mouseenter="activeIndex = index"
       >
         <div class="history-meta">
-          <span>{{ categoryLabel[item.category] }} / {{ formatLabel[item.format] }}</span>
+          <span>{{ itemTypeLabel(item) }}</span>
           <span class="history-meta-right">
             <span class="copy-count">× {{ item.copyCount }}</span>
             <span>{{ formatTime(item.createdAt) }}</span>
@@ -586,7 +706,8 @@ watch(customDate, () => {
     </div>
 
     <div class="popup-footer">
-      <span>↑↓ 选择 · Enter 粘贴 · Esc 关闭</span>
+      <span class="footer-summary" :title="filterSummary">{{ filterSummary }}</span>
+      <span class="footer-hint">↑↓ 选择 · Enter 粘贴 · Esc 关闭</span>
     </div>
 
     <div v-if="previewVisible" class="image-preview-overlay">
@@ -631,24 +752,143 @@ watch(customDate, () => {
   border-top: 1px solid #d6d6d6;
 }
 
+/* 常驻工具条：只留搜索框 + 筛选按钮，整体高度压到最小 */
 .search-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 118px;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: #fafafa;
+}
+
+.search-toolbar :deep(.el-input__wrapper) {
+  min-height: 28px;
+}
+
+.filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid #b8b8b8;
+  border-radius: 2px;
+  background: #ffffff;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.filter-toggle:hover {
+  background: #f2f2f2;
+  border-color: #767676;
+}
+
+.filter-toggle.is-active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* 有生效中的非默认条件时高亮，收起面板也能看出来筛过了 */
+.filter-toggle.is-filtered {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.filter-arrow {
+  transition: transform 0.15s ease;
+}
+
+.filter-arrow.is-open {
+  transform: rotate(180deg);
+}
+
+.filter-badge {
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+}
+
+/* 筛选面板：按需展开，收起时完全不占高度 */
+.filter-panel {
+  flex-shrink: 0;
+  /* 最多占窗口 45%，保证展开时列表仍有超过一半的高度 */
+  max-height: 45%;
+  overflow-y: auto;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  background: #fafafa;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
   gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  background: #fafafa;
 }
 
-.search-toolbar :deep(.el-input__wrapper),
-.search-toolbar :deep(.el-select__wrapper) {
-  min-height: 32px;
+.filter-label {
+  flex-shrink: 0;
+  width: 28px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
-.search-history {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  background: #fafafa;
+.filter-control {
+  flex: 1;
+  min-width: 0;
+}
+
+.filter-panel :deep(.el-input__wrapper),
+.filter-panel :deep(.el-select__wrapper) {
+  min-height: 28px;
+}
+
+/* 日期分段按钮：替代原 el-tabs，高度 46px → 28px */
+.date-segments {
+  display: flex;
+  flex: 1;
+  gap: 4px;
+}
+
+.date-segment {
+  flex: 1;
+  height: 28px;
+  padding: 0 4px;
+  border: 1px solid #b8b8b8;
+  border-radius: 2px;
+  background: #ffffff;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.date-segment:hover {
+  background: #f2f2f2;
+  border-color: #767676;
+}
+
+.date-segment.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.filter-history {
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
 }
 
 .search-history-header {
@@ -728,27 +968,6 @@ watch(customDate, () => {
   background: #ffffff;
 }
 
-.date-tabs {
-  padding: 0 12px 4px;
-  border-bottom: 1px solid var(--border);
-  background: #fafafa;
-}
-
-.date-tabs :deep(.el-tabs__header) {
-  margin: 0;
-}
-
-.date-tabs :deep(.el-tabs__nav-wrap::after) {
-  height: 1px;
-  background: #dedede;
-}
-
-.date-tabs :deep(.el-tabs__item) {
-  height: 42px;
-  padding: 0 17px;
-  font-size: 14px;
-}
-
 .popup-body .history-item {
   margin-bottom: 6px;
   padding: 9px 10px;
@@ -816,12 +1035,28 @@ watch(customDate, () => {
 
 .popup-footer {
   flex-shrink: 0;
-  padding: 5px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px;
   font-size: 11px;
   color: var(--muted);
-  text-align: center;
   border-top: 1px solid var(--border);
   background: #fafafa;
+}
+
+/* 左侧常驻筛选摘要：面板收起时也知道当前看的是哪个范围 */
+.footer-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.footer-hint {
+  flex-shrink: 0;
 }
 
 .image-preview-overlay {

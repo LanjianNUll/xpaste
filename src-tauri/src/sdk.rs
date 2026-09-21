@@ -243,6 +243,12 @@ fn write_to_clipboard(row: ClipboardItemRow) -> Result<(), arboard::Error> {
                 clipboard.set_html(html, row.text)?;
             }
         }
+        // 文件/文件夹记录写回的就是完整路径：多选时一行一个路径。
+        "file" => {
+            if let Some(text) = row.text.or(row.file_path) {
+                clipboard.set_text(text)?;
+            }
+        }
         _ => {
             if let Some(text) = row.text.or(row.file_path).or(row.color) {
                 clipboard.set_text(text)?;

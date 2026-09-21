@@ -39,7 +39,8 @@ const categoryLabel: Record<ClipboardItem["category"], string> = {
   link: "链接",
   image: "图片",
   text: "文本",
-  file: "文件"
+  file: "文件",
+  folder: "文件夹"
 };
 
 const formatLabel: Record<ClipboardItem["format"], string> = {
@@ -170,12 +171,38 @@ function shortPreview(item: ClipboardItem) {
     return "[图片]";
   }
   if (item.format === "file") {
-    return item.filePath ?? "[文件]";
+    return filePreview(item);
   }
   if (item.format === "color") {
     return item.color ?? item.text ?? "[颜色]";
   }
   return item.text ?? item.html ?? "";
+}
+
+/**
+ * 文件/文件夹记录的内容预览：始终展示完整路径；
+ * 多选时展示首个路径并标注数量（粘贴时会写入全部路径）。
+ */
+function filePreview(item: ClipboardItem) {
+  const paths = (item.text ?? item.filePath ?? "")
+    .split(/\r?\n/)
+    .map((path) => path.trim())
+    .filter(Boolean);
+  if (paths.length === 0) {
+    return "[文件]";
+  }
+  if (paths.length === 1) {
+    return paths[0];
+  }
+  return `${paths[0]} 等 ${paths.length} 个路径`;
+}
+
+/** 类型文案：文件夹单独展示，其余沿用「分类 / 格式」 */
+function itemTypeLabel(item: ClipboardItem) {
+  if (item.category === "folder") {
+    return "文件夹";
+  }
+  return `${categoryLabel[item.category]} / ${formatLabel[item.format]}`;
 }
 
 async function clearData() {
@@ -314,7 +341,7 @@ watch(customDate, () => {
             @click="handleItemClick(item)"
           >
             <div class="history-meta">
-              <span>{{ categoryLabel[item.category] }} / {{ formatLabel[item.format] }}</span>
+              <span>{{ itemTypeLabel(item) }}</span>
               <span>{{ formatTime(item.createdAt) }}</span>
             </div>
             <div v-if="item.format === 'image'" class="history-image-preview">
