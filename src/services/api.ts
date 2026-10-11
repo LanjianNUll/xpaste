@@ -2,6 +2,7 @@ import type { ClipboardItem, HistoryPage, HistoryPageQuery } from "@/types";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { isEnabled, enable, disable } from "@tauri-apps/plugin-autostart";
+import { defaultHotkey } from "@/services/platform";
 
 export interface ClipboardSdk {
   fetchHistory(query?: string, limit?: number): Promise<ClipboardItem[]>;
@@ -159,7 +160,8 @@ export async function getHotkey(): Promise<string> {
   try {
     return await invoke<string>("get_hotkey");
   } catch {
-    return "Win+V";
+    // 拿不到后端配置时（例如浏览器里预览）回落到当前平台的默认值
+    return defaultHotkey;
   }
 }
 

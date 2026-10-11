@@ -30,15 +30,11 @@ pub fn toggle_popup(app: &AppHandle) -> Result<(), String> {
     remember_foreground_window(&window);
 
     let (x, y) = popup_position(&window);
-    window
-        .set_position(tauri::PhysicalPosition::new(x, y))
-        .map_err(|error| error.to_string())?;
+    apply_popup_position(&window, x, y)?;
     // 跨越不同缩放比例的显示器后，窗口外框尺寸可能随 DPI 更新，再校正一次位置。
     let (corrected_x, corrected_y) = popup_position(&window);
     if (corrected_x, corrected_y) != (x, y) {
-        window
-            .set_position(tauri::PhysicalPosition::new(corrected_x, corrected_y))
-            .map_err(|error| error.to_string())?;
+        apply_popup_position(&window, corrected_x, corrected_y)?;
     }
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
@@ -56,6 +52,23 @@ pub fn hide_popup(app: &AppHandle) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// Windows 下用物理像素定位，其余平台用逻辑坐标定位。
+#[cfg(target_os = "windows")]
+fn apply_popup_position(window: &tauri::WebviewWindow, x: i32, y: i32) -> Result<(), String> {
+    window
+        .set_position(tauri::PhysicalPosition::new(x, y))
+        .map_err(|error| error.to_string())
+}
+
+/// macOS 的鼠标位置（CGEvent）与显示器查询（CGDisplayBounds）都工作在逻辑点
+/// 坐标系里，直接按逻辑坐标下发即可，避免多一次乘除缩放带来偏移。
+#[cfg(not(target_os = "windows"))]
+fn apply_popup_position(window: &tauri::WebviewWindow, x: i32, y: i32) -> Result<(), String> {
+    window
+        .set_position(tauri::LogicalPosition::new(f64::from(x), f64::from(y)))
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(target_os = "windows")]
 pub fn restore_previous_window() -> Result<(), String> {
     let handle = PREVIOUS_WINDOW
@@ -69,11 +82,6 @@ pub fn restore_previous_window() -> Result<(), String> {
             return Err("恢复原窗口焦点失败".to_string());
         }
     }
-    Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn restore_previous_window() -> Result<(), String> {
     Ok(())
 }
 
@@ -120,7 +128,51 @@ fn popup_position(window: &tauri::WebviewWindow) -> (i32, i32) {
     }
 }
 
+/// macOS / Linux：把快捷窗口放到鼠标右下方，并用鼠标所在显示器的工作区做边界约束。
 #[cfg(not(target_os = "windows"))]
-fn popup_position(_window: &tauri::WebviewWindow) -> (i32, i32) {
-    (100, 100)
+fn popup_position(window: &tauri::WebviewWindow) -> (i32, i32) {
+    let Some((cursor_x, cursor_y)) = crate::platform::cursor_position() else {
+        return (100, 100);
+    };
+
+    let scale = positive_scale(window.scale_factor().unwrap_or(1.0));
+    let window_size = window
+        .outer_size()
+        .unwrap_or(tauri::PhysicalSize::new(360, 500));
+    let window_width = f64::from(window_size.width) / scale;
+    let window_height = f64::from(window_size.height) / scale;
+
+    // monitor_from_point 在 macOS 上按 CGDisplayBounds 判定，接收的正是逻辑坐标。
+    let bounds = window
+        .monitor_from_point(cursor_x, cursor_y)
+        .ok()
+        .flatten()
+        .or_else(|| window.current_monitor().ok().flatten())
+        .map(|monitor| {
+            let scale = positive_scale(monitor.scale_factor());
+            let position = monitor.position();
+            let size = monitor.size();
+            let left = f64::from(position.x) / scale;
+            let top = f64::from(position.y) / scale;
+            (
+                left,
+                top,
+                left + f64::from(size.width) / scale,
+                top + f64::from(size.height) / scale,
+            )
+        });
+
+    let (left, top, right, bottom) = bounds.unwrap_or((f64::MIN, f64::MIN, f64::MAX, f64::MAX));
+    let x = (cursor_x + 10.0).clamp(left, (right - window_width).max(left));
+    let y = (cursor_y + 10.0).clamp(top, (bottom - window_height).max(top));
+    (x.round() as i32, y.round() as i32)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn positive_scale(scale: f64) -> f64 {
+    if scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
 }

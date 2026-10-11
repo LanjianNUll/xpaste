@@ -22,6 +22,7 @@ import {
   showUpdateDialog,
   updateState
 } from "@/services/update";
+import { defaultHotkey, modifierHint, hotkeyPlaceholder } from "@/services/platform";
 import HistoryManager from "@/components/HistoryManager.vue";
 import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
 import ThemeSettings from "@/components/ThemeSettings.vue";
@@ -34,7 +35,7 @@ const loading = ref(false);
 const selectedId = ref<number | null>(null);
 const activeDate = ref<DateRangeType>("today");
 const customDate = ref<Date>(new Date());
-const currentHotkey = ref("Win+V");
+const currentHotkey = ref(defaultHotkey);
 const showSettingsDialog = ref(false);
 const settingsTab = ref<"appearance" | "general">("appearance");
 const newHotkey = ref("");
@@ -602,11 +603,11 @@ watch(customDate, () => {
             <el-form-item label="全局快捷键">
               <el-input
                 v-model="newHotkey"
-                placeholder="例如：Win+V, Ctrl+Shift+V"
+                :placeholder="hotkeyPlaceholder"
               />
               <div class="settings-tip">
                 当前快捷键：<span class="hotkey-value">{{ currentHotkey }}</span><br>
-                支持的修饰键：Ctrl、Alt、Shift、Win；按键：A-Z。修改后可能需要重启应用生效。
+                支持的修饰键：{{ modifierHint }}；按键：A-Z。修改后立即生效。
               </div>
             </el-form-item>
 

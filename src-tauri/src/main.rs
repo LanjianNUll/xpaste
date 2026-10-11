@@ -6,7 +6,10 @@ mod clipboard;
 mod db;
 mod history_repository;
 mod keyboard_hook;
+#[cfg(target_os = "macos")]
+mod macos;
 mod models;
+mod platform;
 mod sdk;
 mod window_controller;
 
@@ -16,52 +19,176 @@ use tauri_plugin_autostart::ManagerExt;
 use crate::models::{ClipboardItem, HistoryPage, HistoryPageQuery};
 use crate::sdk::ClipboardSdk;
 
-fn parse_hotkey(hotkey: &str) -> (u32, bool, bool, bool, bool) {
-    let parts: Vec<&str> = hotkey.split('+').map(|s| s.trim()).collect();
-    let mut ctrl = false;
-    let mut alt = false;
-    let mut shift = false;
-    let mut win = false;
-    let mut key_code = 0x56u32; // V 键的虚拟键码
+/// 平台无关的快捷键描述，解析自用户在设置里填写的字符串。
+///
+/// 同一个字符串（例如 `Cmd+Shift+V`）在 Windows 上会落到低级键盘钩子，
+/// 在 macOS 上会落到系统全局快捷键，因此这里只保留语义，不保留虚拟键码。
+struct HotkeySpec {
+    /// 主键，目前仅支持字母 A-Z。
+    letter: char,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    /// Windows 徽标键 / macOS Command 键。
+    meta: bool,
+}
 
-    for part in &parts {
-        match part.to_uppercase().as_str() {
-            "CTRL" | "CONTROL" => ctrl = true,
-            "ALT" => alt = true,
-            "SHIFT" => shift = true,
-            "SUPER" | "WIN" | "CMD" => win = true,
-            // 字母键 (A-Z 对应 0x41-0x5A)
-            "A" => key_code = 0x41,
-            "B" => key_code = 0x42,
-            "C" => key_code = 0x43,
-            "D" => key_code = 0x44,
-            "E" => key_code = 0x45,
-            "F" => key_code = 0x46,
-            "G" => key_code = 0x47,
-            "H" => key_code = 0x48,
-            "I" => key_code = 0x49,
-            "J" => key_code = 0x4A,
-            "K" => key_code = 0x4B,
-            "L" => key_code = 0x4C,
-            "M" => key_code = 0x4D,
-            "N" => key_code = 0x4E,
-            "O" => key_code = 0x4F,
-            "P" => key_code = 0x50,
-            "Q" => key_code = 0x51,
-            "R" => key_code = 0x52,
-            "S" => key_code = 0x53,
-            "T" => key_code = 0x54,
-            "U" => key_code = 0x55,
-            "V" => key_code = 0x56,
-            "W" => key_code = 0x57,
-            "X" => key_code = 0x58,
-            "Y" => key_code = 0x59,
-            "Z" => key_code = 0x5A,
-            _ => {}
+impl HotkeySpec {
+    fn parse(hotkey: &str) -> Self {
+        let mut spec = HotkeySpec {
+            letter: 'V',
+            ctrl: false,
+            alt: false,
+            shift: false,
+            meta: false,
+        };
+
+        for part in hotkey.split('+') {
+            match part.trim().to_uppercase().as_str() {
+                "CTRL" | "CONTROL" => spec.ctrl = true,
+                "ALT" | "OPTION" => spec.alt = true,
+                "SHIFT" => spec.shift = true,
+                "SUPER" | "WIN" | "CMD" | "COMMAND" | "META" => spec.meta = true,
+                token => {
+                    if let Some(letter) = single_letter(token) {
+                        spec.letter = letter;
+                    }
+                }
+            }
+        }
+
+        spec
+    }
+
+    /// 当前平台的默认快捷键。
+    ///
+    /// Windows 上抢占系统 Win+V 是设计目标（覆盖原生剪贴板历史）；
+    /// macOS 上 ⌘V 是所有应用的粘贴键，全局抢占会破坏正常粘贴，
+    /// 因此默认改用 ⌘⇧V——这也是 Mac 剪贴板管理器的通行做法。
+    fn default_for_platform() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "Win+V"
+        } else if cfg!(target_os = "macos") {
+            "Cmd+Shift+V"
+        } else {
+            "Ctrl+Shift+V"
         }
     }
 
-    (key_code, ctrl, alt, shift, win)
+    /// Windows 虚拟键码，A-Z 恰好对应 0x41-0x5A。
+    #[cfg(target_os = "windows")]
+    fn virtual_key_code(&self) -> u32 {
+        self.letter as u32
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl HotkeySpec {
+    /// 映射到 global-hotkey 的按键枚举。
+    fn code(&self) -> Option<tauri_plugin_global_shortcut::Code> {
+        use tauri_plugin_global_shortcut::Code;
+
+        Some(match self.letter {
+            'A' => Code::KeyA,
+            'B' => Code::KeyB,
+            'C' => Code::KeyC,
+            'D' => Code::KeyD,
+            'E' => Code::KeyE,
+            'F' => Code::KeyF,
+            'G' => Code::KeyG,
+            'H' => Code::KeyH,
+            'I' => Code::KeyI,
+            'J' => Code::KeyJ,
+            'K' => Code::KeyK,
+            'L' => Code::KeyL,
+            'M' => Code::KeyM,
+            'N' => Code::KeyN,
+            'O' => Code::KeyO,
+            'P' => Code::KeyP,
+            'Q' => Code::KeyQ,
+            'R' => Code::KeyR,
+            'S' => Code::KeyS,
+            'T' => Code::KeyT,
+            'U' => Code::KeyU,
+            'V' => Code::KeyV,
+            'W' => Code::KeyW,
+            'X' => Code::KeyX,
+            'Y' => Code::KeyY,
+            'Z' => Code::KeyZ,
+            _ => return None,
+        })
+    }
+}
+
+fn single_letter(token: &str) -> Option<char> {
+    let mut chars = token.chars();
+    let letter = chars.next()?;
+    if chars.next().is_some() || !letter.is_ascii_alphabetic() {
+        return None;
+    }
+    Some(letter.to_ascii_uppercase())
+}
+
+/// 让快捷键立即生效。
+///
+/// Windows 走低级键盘钩子：可以抢占系统已占用的 Win 组合键；
+/// 其余平台走 tauri-plugin-global-shortcut（macOS 底层是 Carbon 热键注册）。
+#[cfg(target_os = "windows")]
+fn apply_hotkey(app: &tauri::AppHandle, hotkey: &str) -> Result<(), String> {
+    let spec = HotkeySpec::parse(hotkey);
+    let app_handle = app.clone();
+
+    keyboard_hook::register_hotkey(
+        spec.virtual_key_code(),
+        spec.ctrl,
+        spec.alt,
+        spec.shift,
+        spec.meta,
+        move || {
+            let handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = window_controller::toggle_popup(&handle);
+            });
+        },
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_hotkey(app: &tauri::AppHandle, hotkey: &str) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Modifiers, Shortcut};
+
+    let spec = HotkeySpec::parse(hotkey);
+    let code = spec
+        .code()
+        .ok_or_else(|| format!("不支持的按键（目前仅支持 A-Z）：{hotkey}"))?;
+
+    let mut modifiers = Modifiers::empty();
+    if spec.ctrl {
+        modifiers |= Modifiers::CONTROL;
+    }
+    if spec.alt {
+        modifiers |= Modifiers::ALT;
+    }
+    if spec.shift {
+        modifiers |= Modifiers::SHIFT;
+    }
+    if spec.meta {
+        modifiers |= Modifiers::SUPER;
+    }
+
+    let shortcut = Shortcut::new((!modifiers.is_empty()).then_some(modifiers), code);
+    let manager = app.global_shortcut();
+    // 换绑前先清掉旧组合键，否则旧键会一直留在系统里，两个键都能唤起面板。
+    let _ = manager.unregister_all();
+
+    manager
+        .on_shortcut(shortcut, move |app, _shortcut, _event| {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = window_controller::toggle_popup(&handle);
+            });
+        })
+        .map_err(|error| format!("注册全局快捷键失败：{error}"))
 }
 
 struct AppState {
@@ -264,7 +391,39 @@ async fn set_clipboard_and_paste(
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
+/// macOS：写入剪贴板 → 隐藏面板并把焦点交还上一个应用 → 模拟 ⌘V。
+///
+/// macOS 没有 Windows 那种"记住前台窗口再抢回来"的可靠做法，改用系统自带的
+/// `hide()`：它会把整个应用藏起来，系统随即把焦点还给上一次的前台应用，
+/// 之后合成的 ⌘V 才会落进用户原本的输入框而不是我们自己。
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn set_clipboard_and_paste(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    state.sdk.copy_item(id).await?;
+
+    // 没有辅助功能权限时系统会静默丢弃合成按键，表现为"点了没反应"。
+    // 这里刻意不隐藏面板：用户必须看到这条提示，才知道要去系统设置里授权。
+    // 内容已经进了剪贴板，此时手动按 ⌘V 依然可用。
+    if !macos::has_accessibility_permission() {
+        return Err(
+            "已复制到剪贴板。要自动粘贴，请在「系统设置 → 隐私与安全性 → 辅助功能」中允许 Xpaste。"
+                .to_string(),
+        );
+    }
+
+    let _ = window_controller::hide_popup(&app);
+    let _ = app.hide();
+    tokio::time::sleep(tokio::time::Duration::from_millis(120)).await;
+
+    macos::simulate_paste()
+}
+
+/// 其余平台暂不支持模拟按键，退化为仅写入剪贴板。
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 #[tauri::command]
 async fn set_clipboard_and_paste(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     set_clipboard(state, id).await
@@ -302,35 +461,23 @@ async fn search_history_by_date(
         .await
 }
 
-#[cfg(target_os = "windows")]
 #[tauri::command]
 async fn get_cursor_position() -> Result<(i32, i32), String> {
-    use windows::Win32::Foundation::POINT;
-    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
-
-    unsafe {
-        let mut point = POINT { x: 0, y: 0 };
-        GetCursorPos(&mut point).map_err(|e| e.to_string())?;
-        Ok((point.x, point.y))
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-#[tauri::command]
-async fn get_cursor_position() -> Result<(i32, i32), String> {
-    Ok((0, 0))
+    platform::cursor_position()
+        .map(|(x, y)| (x as i32, y as i32))
+        .ok_or_else(|| "当前平台不支持读取鼠标位置".to_string())
 }
 
 #[tauri::command]
 async fn get_hotkey(app: tauri::AppHandle) -> Result<String, String> {
-    // 从配置文件读取快捷键，如果不存在则返回默认值
+    // 从配置文件读取快捷键，如果不存在则返回当前平台的默认值
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     let config_file = config_dir.join("hotkey.txt");
 
     if config_file.exists() {
         std::fs::read_to_string(config_file).map_err(|e| e.to_string())
     } else {
-        Ok("Win+V".to_string())
+        Ok(HotkeySpec::default_for_platform().to_string())
     }
 }
 
@@ -343,22 +490,8 @@ async fn set_hotkey(app: tauri::AppHandle, hotkey: String) -> Result<(), String>
 
     std::fs::write(config_file, &hotkey).map_err(|e| e.to_string())?;
 
-    // 重新注册快捷键
-    #[cfg(target_os = "windows")]
-    {
-        let (key_code, ctrl, alt, shift, win) = parse_hotkey(&hotkey);
-        let app_handle = app.clone();
-
-        keyboard_hook::register_hotkey(key_code, ctrl, alt, shift, win, move || {
-            let handle = app_handle.clone();
-            tauri::async_runtime::spawn(async move {
-                let _ = window_controller::toggle_popup(&handle);
-            });
-        })
-        .map_err(|e| format!("重新注册快捷键失败: {}", e))?;
-    }
-
-    Ok(())
+    // 立即换绑，不必等下次启动
+    apply_hotkey(&app, &hotkey)
 }
 
 fn main() {
@@ -384,7 +517,11 @@ fn main() {
             // 首次运行时，默认开启自启动
             let first_run_flag = app_data_dir.join(".first_run");
             if !first_run_flag.exists() {
-                let _ = app.handle().autolaunch().enable();
+                // 原本这里是 let _ = ，失败时一点线索都不留；
+                // 自启动在 macOS 上依赖 LaunchAgent，失败原因值得记进日志。
+                if let Err(error) = app.handle().autolaunch().enable() {
+                    clipboard::log_line(&format!("autostart: 首次运行开启自启动失败: {error}"));
+                }
                 std::fs::File::create(first_run_flag)?;
             }
 
@@ -402,10 +539,23 @@ fn main() {
             let app_handle_for_click = app.handle().clone();
             let app_handle_for_menu = app.handle().clone();
 
-            let tray = TrayIconBuilder::with_id("main")
-                .tooltip("Xpaste")
-                .icon(app.default_window_icon().unwrap().clone())
-                .menu(&menu)
+            let mut tray_builder = TrayIconBuilder::with_id("main").tooltip("Xpaste").menu(&menu);
+
+            // 托盘图标：macOS 的默认窗口图标来自 bundle 里的 icns/png。
+            // 这里做一次存在性判断，避免图标缺失时 unwrap 直接把应用打崩——
+            // 托盘是本应用唯一常驻入口，宁可少个图标也不能崩在启动阶段。
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
+            }
+
+            // macOS 上托盘左键默认会弹出菜单，和「左键显示主窗口」打架：
+            // 关掉之后左键 = 显示主窗口、右键 = 菜单，行为与 Windows 版一致。
+            #[cfg(target_os = "macos")]
+            {
+                tray_builder = tray_builder.show_menu_on_left_click(false);
+            }
+
+            let tray = tray_builder
                 .on_menu_event(move |_app, event| {
                     println!("Tray menu event: {:?}", event.id);
                     match event.id.as_ref() {
@@ -475,55 +625,36 @@ fn main() {
                 });
             }
 
-            // 注册全局快捷键（使用低级键盘钩子以提高优先级）
-            let app_handle = app.handle().clone();
-
-            // 读取保存的快捷键配置
+            // 注册全局快捷键
+            //
+            // 读取保存的配置；空值以及历史上的 Windows 默认值都回落到当前平台默认键
+            // ——在 macOS 上沿用 Win+V 等于抢占系统 ⌘V，会把所有应用的粘贴都劫走。
             let config_dir = app.path().app_config_dir()?;
             std::fs::create_dir_all(&config_dir)?;
             let config_file = config_dir.join("hotkey.txt");
             let saved_hotkey = std::fs::read_to_string(&config_file).unwrap_or_default();
-            let hotkey_str = if saved_hotkey.trim().is_empty() || saved_hotkey.trim() == "Alt+V" {
-                let default_hotkey = "Win+V".to_string();
+            let trimmed_hotkey = saved_hotkey.trim();
+
+            let needs_platform_default = trimmed_hotkey.is_empty()
+                || trimmed_hotkey == "Alt+V"
+                || (cfg!(target_os = "macos") && trimmed_hotkey == "Win+V");
+
+            let hotkey_str = if needs_platform_default {
+                let default_hotkey = HotkeySpec::default_for_platform().to_string();
                 std::fs::write(&config_file, &default_hotkey)?;
                 default_hotkey
             } else {
-                saved_hotkey
+                trimmed_hotkey.to_string()
             };
 
-            // 解析快捷键字符串
-            let (key_code, ctrl, alt, shift, win) = parse_hotkey(&hotkey_str);
+            apply_hotkey(app.handle(), &hotkey_str)
+                .map_err(|error| format!("注册快捷键失败：{error}"))?;
 
-            #[cfg(target_os = "windows")]
-            {
-                keyboard_hook::register_hotkey(key_code, ctrl, alt, shift, win, move || {
-                    let handle = app_handle.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let _ = window_controller::toggle_popup(&handle);
-                    });
-                })
-                .map_err(|e| format!("注册快捷键失败: {}", e))?;
-            }
-
-            #[cfg(not(target_os = "windows"))]
-            {
-                // 非 Windows 系统使用原来的方式
-                tauri::async_runtime::spawn(async move {
-                    use tauri_plugin_global_shortcut::{
-                        Code, GlobalShortcutExt, Modifiers, Shortcut,
-                    };
-
-                    let shortcut =
-                        Shortcut::new(if alt { Some(Modifiers::ALT) } else { None }, Code::KeyV);
-
-                    let _ = app_handle.global_shortcut().on_shortcut(
-                        shortcut,
-                        move |app, _shortcut, _event| {
-                            // ... 原来的逻辑
-                        },
-                    );
-                });
-            }
+            // macOS 上窗口是自绘标题栏的，Dock 图标保持默认（可见）：这样即使托盘
+            // 状态项没出现，用户也还能正常切换/退出应用。想做成纯托盘应用（对齐
+            // Windows 的 skipTaskbar），把下面这行放开即可。
+            // #[cfg(target_os = "macos")]
+            // app.handle().set_dock_visibility(false)?;
 
             Ok(())
         })

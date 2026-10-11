@@ -259,7 +259,9 @@ async function handleItemClick(item: ClipboardItem) {
     // 粘贴成功才说明这次搜索确实有用，此时把关键词记进历史搜索。
     recordSearchKeyword(searchKeyword);
   } catch (err) {
-    ElMessage.error("写入剪贴板失败。");
+    // Rust 侧会在这里回传可操作的原因（例如 macOS 未授予辅助功能权限），
+    // 直接展示比笼统的"失败"更有用。
+    ElMessage.error(typeof err === "string" ? err : "写入剪贴板失败。");
   } finally {
     pasting.value = false;
   }
