@@ -100,6 +100,35 @@ pnpm tauri build
 
 构建完成后，可执行文件位于 `src-tauri/target/release/` 目录。
 
+### 发布新版本（自动）
+
+版本号记录在 4 个文件里，用脚本一次改好，避免 CI 因版本不一致拒绝发版：
+
+```bash
+pnpm version:bump 2.0.8      # 同时更新 package.json / tauri.conf.json / Cargo.toml / Cargo.lock
+git commit -am "chore: release v2.0.8"
+git push
+```
+
+推送后 [`.github/workflows/release.yml`](.github/workflows/release.yml) 会自动：
+
+1. 校验三处版本号一致，且该版本还没发过（只改代码没改版本号的提交会直接跳过）；
+2. 在 `windows-latest` 上构建 Windows 安装包（NSIS `.exe`）并打包便携版 zip；
+3. 创建 Release，**按两个版本之间的提交/PR 自动生成更新日志**，然后正式发布。
+
+产物包括：
+
+- `Xpaste_<版本>_x64-setup.exe` —— 安装包
+- `Xpaste_v<版本>_portable_win_x64.zip` —— 便携版（解压即用）
+
+也可以不用脚本，直接打 tag 触发（tag 名必须和代码里的版本号一致）：
+
+```bash
+git tag v2.0.8 && git push origin v2.0.8
+```
+
+或在 GitHub 的 **Actions → Release → Run workflow** 手动触发，勾选 `force` 可强制重发同一版本。
+
 ## 📖 使用说明
 
 ### 基本操作
@@ -224,6 +253,8 @@ paste_app/
 │   │   └── classify.rs    # 内容分类
 │   ├── capabilities/      # 权限配置
 │   └── icons/             # 应用图标
+├── .github/workflows/     # CI：release.yml 负责构建 Windows 包并自动发版
+├── scripts/               # 辅助脚本（bump-version.mjs 统一改版本号）
 ├── index.html             # 主窗口 HTML
 ├── popup.html             # 快捷窗口 HTML
 └── package.json

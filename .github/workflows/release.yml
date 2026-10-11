@@ -1,0 +1,154 @@
+name: Release
+
+# 发版触发方式（三种任选）：
+#   1. 改好版本号推到 main —— 版本号和上次发过的 tag 不同才会发版（推荐日常用法）
+#   2. 直接推 tag，例如：git tag v2.0.8 && git push origin v2.0.8
+#   3. 在 Actions 页面手动 Run workflow（可勾选强制重发同一版本）
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "版本已发布过也强制重新发布"
+        type: boolean
+        default: false
+
+# 创建 Release / 上传产物需要写权限
+permissions:
+  contents: write
+
+# 同一个分支/标签的发版任务排队执行，避免两个 Release 抢同一个 tag
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── 1. 读版本号，判断这次要不要发版 ───────────────────────────────
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      should_release: ${{ steps.meta.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验版本号并判断是否需要发版
+        id: meta
+        env:
+          FORCE: ${{ inputs.force }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          pkg=$(node -p "require('./package.json').version")
+          cargo=$(grep -m1 '^version = ' src-tauri/Cargo.toml | cut -d'"' -f2)
+
+          if [ "$pkg" != "$version" ] || [ "$cargo" != "$version" ]; then
+            echo "::error::三处版本号不一致：tauri.conf.json=$version / package.json=$pkg / Cargo.toml=$cargo。" \
+                 "先执行 pnpm version:bump $version 对齐后再提交。"
+            exit 1
+          fi
+
+          tag="v$version"
+          # tag 触发时，tag 名必须和代码里的版本号一致，否则会发出一个版本号对不上的 Release
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ "${GITHUB_REF_NAME:-}" != "$tag" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME:-} 与代码里的版本 $tag 不一致，请先对齐版本号再打 tag。"
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "由 tag ${GITHUB_REF_NAME:-} 触发，开始发版"
+          elif [ "${FORCE:-}" = "true" ]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "手动强制发版 $tag"
+          elif gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "$tag 已经有 Release 了：这次只改了代码没改版本号，跳过发版"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "发现新版本 $tag，开始构建"
+          fi
+
+  # ── 2. 构建 Windows 安装包 + 便携版，并创建 Release ────────────────
+  release:
+    needs: version
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm 必须装在 setup-node 之前，setup-node 的 pnpm 缓存才能生效
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust 构建缓存
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      # 由 tauri-action 执行 tauri build：先把 Release 建成草稿并挂上安装包，
+      # 这样下一步生成更新日志后可以一次性正式发布
+      - name: 构建并上传安装包到 Release（草稿）
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "Xpaste v__VERSION__"
+          releaseDraft: true
+          prerelease: false
+          # 只要 exe 安装包；想同时出 msi 改成 --bundles nsis,msi
+          args: --bundles nsis
+
+      - name: 打包便携版 zip
+        shell: pwsh
+        run: |
+          $exe = "src-tauri/target/release/paste_app.exe"
+          if (-not (Test-Path $exe)) { throw "找不到编译产物：$exe" }
+          New-Item -ItemType Directory -Force -Path portable | Out-Null
+          Copy-Item $exe portable/Xpaste.exe
+          Compress-Archive -Path portable/Xpaste.exe `
+            -DestinationPath "Xpaste_v${{ needs.version.outputs.version }}_portable_win_x64.zip" -Force
+
+      - name: 上传便携版
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.version.outputs.tag }}" `
+            "Xpaste_v${{ needs.version.outputs.version }}_portable_win_x64.zip" --clobber
+
+      - name: 自动生成更新日志并正式发布
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ needs.version.outputs.tag }}"
+          $id = gh release view $tag --json id -q .id
+          # generate_release_notes=true：让 GitHub 按两个 tag 之间的提交/PR 自动生成更新日志
+          gh api -X PATCH "repos/${{ github.repository }}/releases/$id" `
+            -F draft=false -F generate_release_notes=true | Out-Null
+          Write-Host "已发布：$(gh release view $tag --json url -q .url)"
