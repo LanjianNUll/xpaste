@@ -15,10 +15,18 @@ import {
   subscribeClipboardUpdates
 } from "@/services/api";
 import { setThemeMode } from "@/services/theme";
+import {
+  checkForUpdate,
+  initAutoUpdate,
+  installUpdate,
+  showUpdateDialog,
+  updateState
+} from "@/services/update";
 import HistoryManager from "@/components/HistoryManager.vue";
 import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
 import ThemeSettings from "@/components/ThemeSettings.vue";
 import AmbientLayer from "@/components/AmbientLayer.vue";
+import UpdateDialog from "@/components/UpdateDialog.vue";
 
 const query = ref("");
 const items = ref<ClipboardItem[]>([]);
@@ -312,8 +320,62 @@ async function clearDataInSettings() {
   }
 }
 
+/* ===== 自动更新 ===== */
+
+/** 设置面板里的"检查更新"：手动触发，结果直接反馈在按钮旁边 */
+const updateChecking = ref(false);
+
+const updateStatusText = computed(() => {
+  switch (updateState.phase) {
+    case "checking":
+      return "正在检查…";
+    case "available":
+    case "downloading":
+      return `发现新版本 v${updateState.version}，正在下载 ${updateState.percent}%`;
+    case "ready":
+      return `新版本 v${updateState.version} 已下载完成`;
+    case "installing":
+      return "正在启动安装程序…";
+    case "latest":
+      return `已是最新版本${updateState.currentVersion ? `（v${updateState.currentVersion}）` : ""}`;
+    case "error":
+      return updateState.error || "检查更新失败";
+    default:
+      return "每次启动会自动检查一次更新";
+  }
+});
+
+async function handleCheckUpdate() {
+  if (updateChecking.value) return;
+  updateChecking.value = true;
+  try {
+    const hasUpdate = await checkForUpdate(false);
+    if (hasUpdate) {
+      showUpdateDialog();
+    } else if (updateState.phase === "latest") {
+      ElMessage.success("当前已是最新版本");
+    } else if (updateState.phase === "error") {
+      ElMessage.warning(updateState.error || "检查更新失败");
+    }
+  } finally {
+    updateChecking.value = false;
+  }
+}
+
+/** 已下载完成时，"检查更新"按钮变成"重启安装" */
+async function handleUpdateAction() {
+  if (updateState.phase === "ready") {
+    await installUpdate();
+    return;
+  }
+  await handleCheckUpdate();
+}
+
 onMounted(async () => {
   await loadHistory();
+
+  // 启动时自动检查更新（开发模式与浏览器预览会自动跳过）
+  void initAutoUpdate();
 
   themeObserver = new MutationObserver(() => {
     resolvedDark.value = document.documentElement.dataset.theme === "dark";
@@ -373,6 +435,7 @@ watch(customDate, () => {
 <template>
   <div class="app-shell">
     <AmbientLayer />
+    <UpdateDialog />
     <!-- 窗口无系统边框（decorations:false），这条工具栏同时充当标题栏：
          整条可拖动，右侧是自绘的最小化 / 最大化 / 关闭按钮 -->
     <div class="toolbar" data-tauri-drag-region>
@@ -555,6 +618,16 @@ watch(customDate, () => {
             <el-form-item label="数据管理">
               <el-button type="danger" @click="clearDataInSettings">清理存储</el-button>
               <span class="settings-tip" style="margin-left: 8px;">清空所有剪贴板历史记录</span>
+            </el-form-item>
+
+            <el-form-item label="软件更新">
+              <el-button
+                :loading="updateChecking"
+                @click="handleUpdateAction"
+              >
+                {{ updateState.phase === "ready" ? "重启并安装" : "检查更新" }}
+              </el-button>
+              <span class="settings-tip" style="margin-left: 8px;">{{ updateStatusText }}</span>
             </el-form-item>
           </el-form>
         </el-tab-pane>

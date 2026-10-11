@@ -57,6 +57,13 @@
 - 🪟 **全窗口同步** - 主窗口与快捷窗口主题实时联动，切换即时生效
 - 🚫 **无闪烁启动** - 窗口打开前先恢复上次主题，避免白色闪烁
 
+### 自动更新
+
+- 🔄 **启动自动检查** - 每次启动检查远端更新清单，有新版本自动下载
+- 📦 **一键更新** - 下载完成后提示「立即重启安装」，安装完自动重新启动
+- 📝 **带更新日志** - 更新提示里直接显示这个版本改了什么
+- 🔐 **签名校验** - 更新包必须通过 minisign 签名校验才会被安装
+
 ### 窗口管理
 
 - 🖼️ **无边框标题栏** - 主窗口与快捷窗口都不再使用系统边框，顶部直接融入皮肤背景；
@@ -199,7 +206,65 @@ git tag v2.0.8 && git push origin v2.0.8
 4. 「简约渐变」背景由纯 CSS 渐变图层绘制（见 `src/services/scenery.ts`），
    不依赖图片资源：任意分辨率都不糊，也不增加安装包体积
 
-### 托盘菜单
+### 自动更新
+
+应用内置了基于 Tauri 官方 updater 插件的自动更新：**每次启动**先拉取远端更新清单，
+发现有更高版本就弹出提示并**自动开始下载**，下载完成后用户可以自己挑时间点「立即重启安装」，
+安装程序装完会自动把应用重新拉起来。
+
+更新清单是**发布流程自动生成**的 `latest.json`，挂在每个 Release 里（不用手工维护）：
+
+```
+https://github.com/LanjianNUll/xpaste/releases/latest/download/latest.json
+```
+
+内容大致长这样 —— 版本号、下载地址、更新日志、签名四样齐全：
+
+```json
+{
+  "version": "2.0.9",
+  "notes": "## 🎉 Xpaste v2.0.9\n\n- 这次改了什么……",
+  "pub_date": "2026-10-12T02:10:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "…minisign 签名…",
+      "url": "https://github.com/LanjianNUll/xpaste/releases/download/v2.0.9/Xpaste_2.0.9_x64-setup.nsis.zip"
+    }
+  }
+}
+```
+
+更新日志（`notes`）的来源按优先级：`release-notes/<版本>.md`（手写，推荐）
+→ 没有该文件时按两个 tag 之间的提交记录自动生成。
+
+> **便携版说明**：自动更新走的是安装包（NSIS），所以只对用
+> `Xpaste_x.y.z_x64-setup.exe` 安装的版本生效；用便携版 zip 的话，
+> 更新时直接下载新版 zip 覆盖即可。
+
+#### 维护者：首次启用前要做的两件事
+
+更新包必须签名，客户端校验通过才会安装，所以需要一对 minisign 密钥：
+
+```bash
+# 1. 生成密钥对（私钥会写到 ~/.tauri/xpaste.key，请自己收好、不要提交到仓库）
+pnpm tauri signer generate -w ~/.tauri/xpaste.key
+```
+
+2. 把命令输出的**公钥**填进 `src-tauri/tauri.conf.json` → `plugins.updater.pubkey`
+   （替换掉 `REPLACE_WITH_YOUR_UPDATER_PUBLIC_KEY` 占位符）
+
+3. 到 GitHub 仓库 **Settings → Secrets and variables → Actions** 添加两个 Secret：
+
+   | Secret 名 | 值 |
+   | --- | --- |
+   | `TAURI_SIGNING_PRIVATE_KEY` | `~/.tauri/xpaste.key` 文件的内容 |
+   | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 生成密钥时设置的密码（没设密码就留空/不添加） |
+
+配置好之后，发版流程会自动多产出 `*.nsis.zip`、`*.sig` 与 `latest.json`。
+如果这两项没配好，发版流程**不会失败**，只是跳过更新包并在运行摘要里给出警告
+（客户端收不到更新提示）。
+
+
 
 - **左键点击** - 显示主窗口
 - **右键菜单**

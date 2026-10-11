@@ -1,7 +1,7 @@
 name: Release
 
 # 发版触发方式（三种任选）：
-#   1. 改好版本号推到 main —— 版本号和上次发过的 tag 不同才会发版（推荐日常用法）
+#   1. 改好版本号推到 main —— 版本号和上次发过的不同才会发版（推荐日常用法）
 #   2. 直接推 tag，例如：git tag v2.0.8 && git push origin v2.0.8
 #   3. 在 Actions 页面手动 Run workflow（可勾选强制重发同一版本）
 on:
@@ -76,13 +76,16 @@ jobs:
             echo "发现新版本 $tag，开始构建"
           fi
 
-  # ── 2. 构建 Windows 安装包 + 便携版，并创建 Release ────────────────
+  # ── 2. 构建 Windows 安装包 + 便携版 + 自动更新包，并发布 ──────────
   release:
     needs: version
     if: needs.version.outputs.should_release == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # 生成更新日志要读两个 tag 之间的提交，需要完整历史
+          fetch-depth: 0
 
       # pnpm 必须装在 setup-node 之前，setup-node 的 pnpm 缓存才能生效
       - name: 安装 pnpm
@@ -109,19 +112,91 @@ jobs:
       - name: 安装前端依赖
         run: pnpm install --frozen-lockfile
 
-      # 由 tauri-action 执行 tauri build：先把 Release 建成草稿并挂上安装包，
-      # 这样下一步生成更新日志后可以一次性正式发布
+      # 自动更新包必须用私钥签名，客户端才会安装；没配好就只出安装包并存警告
+      - name: 检查自动更新的签名配置
+        id: signing
+        shell: pwsh
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          $config = Get-Content src-tauri/tauri.conf.json -Raw
+          $placeholder = $config -match 'REPLACE_WITH_YOUR_UPDATER_PUBLIC_KEY'
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_KEY) -or $placeholder) {
+            $reason = if ($placeholder) { "tauri.conf.json 里的 updater.pubkey 还是占位符" } else { "未配置 TAURI_SIGNING_PRIVATE_KEY 密钥" }
+            Write-Warning "本次不生成自动更新包：$reason。已安装的客户端将收不到更新提示，配置方法见 README「自动更新」一节。"
+            "has_signing=false" >> $env:GITHUB_OUTPUT
+            "args=--bundles nsis" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "签名配置就绪，将同时生成安装包与自动更新包（latest.json）"
+            "has_signing=true" >> $env:GITHUB_OUTPUT
+            'args=--bundles nsis --config {"bundle":{"createUpdaterArtifacts":true}}' >> $env:GITHUB_OUTPUT
+          }
+
+      # 更新日志：优先用 release-notes/<版本>.md（手写，质量更好），
+      # 没有就按两个 tag 之间的提交记录自动生成
+      - name: 准备更新日志
+        id: notes
+        shell: pwsh
+        run: |
+          $version = "${{ needs.version.outputs.version }}"
+          $tag = "${{ needs.version.outputs.tag }}"
+          $repoUrl = "${{ github.server_url }}/${{ github.repository }}"
+          $noteFile = "release-notes/$version.md"
+          $prev = git describe --tags --abbrev=0 HEAD 2>$null
+
+          if (Test-Path $noteFile) {
+            $body = (Get-Content $noteFile -Raw).Trim()
+            Write-Host "使用 $noteFile 作为更新日志"
+          } elseif ($prev) {
+            $commits = git log --no-merges --pretty=format:"- %s" "$prev..HEAD"
+            $body = "## 更新内容`n`n" + ($commits -join "`n") + "`n`n**完整对比**：$repoUrl/compare/$prev...$tag"
+            Write-Host "没有找到 $noteFile，按 $prev..HEAD 的提交自动生成更新日志"
+          } else {
+            $body = "本次更新详情见 $repoUrl/releases/tag/$tag"
+            Write-Host "没有历史 tag，使用默认说明"
+          }
+
+          "body<<__NOTES_EOF__" >> $env:GITHUB_OUTPUT
+          $body >> $env:GITHUB_OUTPUT
+          "__NOTES_EOF__" >> $env:GITHUB_OUTPUT
+
+      # tauri-action 执行 tauri build：先把 Release 建成草稿并挂上安装包，
+      # 生成更新日志后再一次性正式发布
       - name: 构建并上传安装包到 Release（草稿）
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: "Xpaste v__VERSION__"
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           prerelease: false
-          # 只要 exe 安装包；想同时出 msi 改成 --bundles nsis,msi
-          args: --bundles nsis
+          args: ${{ steps.signing.outputs.args }}
+          includeUpdaterJson: ${{ steps.signing.outputs.has_signing }}
+
+      # 让应用内"发现新版本"弹窗能显示更新日志：把说明同步进 latest.json
+      # 这一步失败不影响发版，只警告
+      - name: 同步更新日志到 latest.json
+        if: steps.signing.outputs.has_signing == 'true'
+        shell: pwsh
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ needs.version.outputs.tag }}"
+          try {
+            $body = gh release view $tag --json body -q .body
+            gh release download $tag -p latest.json --clobber
+            $env:XP_NOTES = $body
+            node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('latest.json','utf8'));j.notes=process.env.XP_NOTES||j.notes||'';fs.writeFileSync('latest.json',JSON.stringify(j,null,2)+'\n')"
+            gh release upload $tag latest.json --clobber
+            Write-Host "latest.json 已带上更新日志"
+          } catch {
+            Write-Warning "同步更新日志到 latest.json 失败（不影响发版）：$_"
+          }
 
       - name: 打包便携版 zip
         shell: pwsh
@@ -141,14 +216,12 @@ jobs:
           gh release upload "${{ needs.version.outputs.tag }}" `
             "Xpaste_v${{ needs.version.outputs.version }}_portable_win_x64.zip" --clobber
 
-      - name: 自动生成更新日志并正式发布
+      - name: 正式发布
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = "${{ needs.version.outputs.tag }}"
           $id = gh release view $tag --json id -q .id
-          # generate_release_notes=true：让 GitHub 按两个 tag 之间的提交/PR 自动生成更新日志
-          gh api -X PATCH "repos/${{ github.repository }}/releases/$id" `
-            -F draft=false -F generate_release_notes=true | Out-Null
+          gh api -X PATCH "repos/${{ github.repository }}/releases/$id" -F draft=false | Out-Null
           Write-Host "已发布：$(gh release view $tag --json url -q .url)"

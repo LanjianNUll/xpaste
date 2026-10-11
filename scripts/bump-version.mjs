@@ -7,7 +7,8 @@
  * 为什么需要它：Tauri 应用的版本号散落在 4 个文件里，
  * 只改一处会导致构建产物版本对不上，CI 里的发版流程也会直接拒绝发布。
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 const version = process.argv[2];
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version ?? "")) {
@@ -68,13 +69,51 @@ if (failed) {
   process.exit(1);
 }
 
+/**
+ * 顺手准备好这个版本的更新日志文件：release-notes/<版本>.md。
+ * 发版流程会优先用它作为 Release 说明与"应用内更新提示"里的更新日志；
+ * 没有这个文件时会按提交记录自动生成（默认也能用）。
+ */
+const noteFile = `release-notes/${version}.md`;
+if (existsSync(noteFile)) {
+  console.log(`✓ 更新日志文件已存在：${noteFile}（发版时会用它）`);
+} else {
+  mkdirSync("release-notes", { recursive: true });
+  let commits = "";
+  try {
+    const previousTag = execFileSync("git", ["describe", "--tags", "--abbrev=0"], { encoding: "utf8" }).trim();
+    commits = execFileSync("git", ["log", "--no-merges", "--pretty=format:- %s", `${previousTag}..HEAD`], {
+      encoding: "utf8"
+    }).trim();
+    console.log(`✓ 已按 ${previousTag}..HEAD 的提交生成 ${noteFile}（可自行润色）`);
+  } catch {
+    console.log(`✓ 已生成空的 ${noteFile}（可自行填写）`);
+  }
+  const template = `## 🎉 Xpaste v${version}
+
+一句话说明这个版本的重点。
+
+### ✨ 新增
+
+- 
+
+### 🛠 修复 / 优化
+
+- 
+
+<!-- 下面这段是本版本已有的提交记录，可作参考后删除 -->
+${commits ? `\n<!--\n${commits}\n-->\n` : ""}`;
+  writeFileSync(noteFile, template, "utf8");
+}
+
 console.log(`
 版本号已更新到 ${version}，接下来：
 
-  git commit -am "chore: release v${version}"
-  git push
+  1. 编辑 release-notes/${version}.md 写下这个版本的更新日志（可选，不写则按提交自动生成）
+  2. git commit -am "chore: release v${version}"
+  3. git push
 
-推送后 GitHub Actions 会自动构建 Windows 安装包 + 便携版，
+推送后 GitHub Actions 会自动构建 Windows 安装包 + 自动更新包 + 便携版，
 并生成更新日志发布 Release。也可以直接打 tag：
 
   git tag v${version} && git push origin v${version}
