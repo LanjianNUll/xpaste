@@ -365,6 +365,10 @@ fn main() {
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
+        // 自动更新：检查远端 latest.json、下载并校验签名、调用安装程序
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // 安装完成后重启应用（Windows 下由安装程序负责重启）
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
