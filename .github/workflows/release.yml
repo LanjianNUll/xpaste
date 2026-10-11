@@ -112,17 +112,33 @@ jobs:
       - name: 安装前端依赖
         run: pnpm install --frozen-lockfile
 
-      # 自动更新包必须用私钥签名，客户端才会安装；没配好就只出安装包并存警告
+      # 自动更新包必须用私钥签名，客户端才会安装。
+      # 这里先拿一个临时文件试签一次：密钥/密码有问题就早点说清楚，
+      # 不至于等二十多分钟编译完才报错；没配好则只出安装包并给警告。
       - name: 检查自动更新的签名配置
         id: signing
         shell: pwsh
         env:
-          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $config = Get-Content src-tauri/tauri.conf.json -Raw
-          $placeholder = $config -match 'REPLACE_WITH_YOUR_UPDATER_PUBLIC_KEY'
-          if ([string]::IsNullOrWhiteSpace($env:SIGNING_KEY) -or $placeholder) {
-            $reason = if ($placeholder) { "tauri.conf.json 里的 updater.pubkey 还是占位符" } else { "未配置 TAURI_SIGNING_PRIVATE_KEY 密钥" }
+          $reason = $null
+
+          if ($config -match 'REPLACE_WITH_YOUR_UPDATER_PUBLIC_KEY') {
+            $reason = "tauri.conf.json 里的 updater.pubkey 还是占位符（需要填入 tauri signer generate 输出的公钥）"
+          } elseif ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            $reason = "未配置 TAURI_SIGNING_PRIVATE_KEY 密钥"
+          } else {
+            Set-Content -Path signing-check.txt -Value "xpaste signing self check" -Encoding ascii
+            pnpm tauri signer sign signing-check.txt *> $null
+            if ($LASTEXITCODE -ne 0) {
+              $reason = "私钥或密码不可用，请检查 TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD 两个 Secret"
+            }
+            Remove-Item signing-check.txt, signing-check.txt.sig -ErrorAction SilentlyContinue
+          }
+
+          if ($reason) {
             Write-Warning "本次不生成自动更新包：$reason。已安装的客户端将收不到更新提示，配置方法见 README「自动更新」一节。"
             "has_signing=false" >> $env:GITHUB_OUTPUT
             "args=--bundles nsis" >> $env:GITHUB_OUTPUT
@@ -133,27 +149,23 @@ jobs:
           }
 
       # 更新日志：优先用 release-notes/<版本>.md（手写，质量更好），
-      # 没有就按两个 tag 之间的提交记录自动生成
+      # 没有就调用 scripts/gen-release-notes.mjs 按「上次发版 tag → HEAD」的提交结构化生成
       - name: 准备更新日志
         id: notes
         shell: pwsh
         run: |
           $version = "${{ needs.version.outputs.version }}"
           $tag = "${{ needs.version.outputs.tag }}"
-          $repoUrl = "${{ github.server_url }}/${{ github.repository }}"
           $noteFile = "release-notes/$version.md"
-          $prev = git describe --tags --abbrev=0 HEAD 2>$null
 
           if (Test-Path $noteFile) {
-            $body = (Get-Content $noteFile -Raw).Trim()
+            $body = (Get-Content $noteFile -Raw -Encoding UTF8).Trim()
             Write-Host "使用 $noteFile 作为更新日志"
-          } elseif ($prev) {
-            $commits = git log --no-merges --pretty=format:"- %s" "$prev..HEAD"
-            $body = "## 更新内容`n`n" + ($commits -join "`n") + "`n`n**完整对比**：$repoUrl/compare/$prev...$tag"
-            Write-Host "没有找到 $noteFile，按 $prev..HEAD 的提交自动生成更新日志"
           } else {
-            $body = "本次更新详情见 $repoUrl/releases/tag/$tag"
-            Write-Host "没有历史 tag，使用默认说明"
+            $generated = node scripts/gen-release-notes.mjs --version $version --to HEAD --stdout
+            if ($LASTEXITCODE -ne 0) { throw "自动生成更新日志失败（$noteFile 不存在，且无法按提交记录生成）" }
+            $body = ($generated | Out-String).Trim()
+            Write-Host "没有找到 $noteFile，已按提交记录自动生成更新日志"
           }
 
           "body<<__NOTES_EOF__" >> $env:GITHUB_OUTPUT

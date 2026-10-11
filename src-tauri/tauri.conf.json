@@ -50,7 +50,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "REPLACE_WITH_YOUR_UPDATER_PUBLIC_KEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYwOUVDRTVCOThDQzk2OUIKUldTYmxzeVlXODZlWUZLUzNRS3hhd0ZFc1czcDRIVGNqUDYxa0J6Y2NsOXc0Znp4OTZSM09vbXcK",
       "endpoints": [
         "https://github.com/LanjianNUll/xpaste/releases/latest/download/latest.json"
       ],

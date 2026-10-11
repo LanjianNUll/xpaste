@@ -7,7 +7,7 @@
  * 为什么需要它：Tauri 应用的版本号散落在 4 个文件里，
  * 只改一处会导致构建产物版本对不上，CI 里的发版流程也会直接拒绝发布。
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
 const version = process.argv[2];
@@ -72,38 +72,18 @@ if (failed) {
 /**
  * 顺手准备好这个版本的更新日志文件：release-notes/<版本>.md。
  * 发版流程会优先用它作为 Release 说明与"应用内更新提示"里的更新日志；
- * 没有这个文件时会按提交记录自动生成（默认也能用）。
+ * 这里用 gen-release-notes.mjs 按「上次发版 tag → 当前 HEAD」的提交生成初稿，再自行润色。
  */
 const noteFile = `release-notes/${version}.md`;
 if (existsSync(noteFile)) {
   console.log(`✓ 更新日志文件已存在：${noteFile}（发版时会用它）`);
 } else {
-  mkdirSync("release-notes", { recursive: true });
-  let commits = "";
   try {
-    const previousTag = execFileSync("git", ["describe", "--tags", "--abbrev=0"], { encoding: "utf8" }).trim();
-    commits = execFileSync("git", ["log", "--no-merges", "--pretty=format:- %s", `${previousTag}..HEAD`], {
-      encoding: "utf8"
-    }).trim();
-    console.log(`✓ 已按 ${previousTag}..HEAD 的提交生成 ${noteFile}（可自行润色）`);
+    // --summary 留空，初稿里会放一句占位提示，写完提交前记得替换成真正的版本重点
+    execFileSync("node", ["scripts/gen-release-notes.mjs", "--version", version], { stdio: "inherit" });
   } catch {
-    console.log(`✓ 已生成空的 ${noteFile}（可自行填写）`);
+    console.warn(`⚠ 没能自动生成 ${noteFile}，请手动补一份（否则发版时会按提交记录自动生成）`);
   }
-  const template = `## 🎉 Xpaste v${version}
-
-一句话说明这个版本的重点。
-
-### ✨ 新增
-
-- 
-
-### 🛠 修复 / 优化
-
-- 
-
-<!-- 下面这段是本版本已有的提交记录，可作参考后删除 -->
-${commits ? `\n<!--\n${commits}\n-->\n` : ""}`;
-  writeFileSync(noteFile, template, "utf8");
 }
 
 console.log(`
