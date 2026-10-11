@@ -33,7 +33,7 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       should_release: ${{ steps.meta.outputs.should_release }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 校验版本号并判断是否需要发版
         id: meta
@@ -82,18 +82,18 @@ jobs:
     if: needs.version.outputs.should_release == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # pnpm 必须装在 setup-node 之前，setup-node 的 pnpm 缓存才能生效
       - name: 安装 pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
         with:
           version: 10
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
 
       - name: 安装 Rust
