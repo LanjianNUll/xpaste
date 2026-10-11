@@ -383,3 +383,18 @@ Made with ❤️ by the Xpaste
 [报告问题](https://github.com/LanjianNUll/xpaste/issues) • [请求功能](https://github.com/LanjianNUll/xpaste/issues/new?labels=enhancement)
 
 </div>
+
+
+### 更新打包 
+
+1. 先执行 pnpm version:bump 2.0.8 对齐后再提交。
+版本号已更新到 2.0.9，接下来：
+
+  1. 编辑 release-notes/2.0.9.md 写下这个版本的更新日志（可选，不写则按提交自动生成）
+  2. git commit -am "chore: release v2.0.9"
+  3. git push
+
+推送后 GitHub Actions 会自动构建 Windows 安装包 + 自动更新包 + 便携版，
+并生成更新日志发布 Release。也可以直接打 tag：
+
+  git tag v2.0.9 && git push origin v2.0.9
