@@ -17,7 +17,8 @@
         "width": 980,
         "height": 720,
         "resizable": true,
-        "skipTaskbar": true
+        "skipTaskbar": true,
+        "decorations": false
       },
       {
         "label": "popup",
@@ -26,7 +27,7 @@
         "width": 360,
         "height": 500,
         "visible": false,
-        "decorations": true,
+        "decorations": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "resizable": false,

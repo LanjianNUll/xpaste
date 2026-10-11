@@ -3,14 +3,17 @@
  *
  * - 模式（mode）：light / dark / system（跟随系统）。
  * - 皮肤（skin）：内置皮肤 id 或 "custom"（自定义），每个皮肤自带主色、
+ *   背景风景（services/scenery.ts 生成，注入 --skin-backdrop-* 变量）、
  *   背景色晕（styles/theme.css 中按 data-skin 定义）与背景粒子动效。
  * - 动效（ambient）：全局开关 effectEnabled + 密度 density；粒子渲染由
  *   services/ambient.ts 引擎负责，AmbientLayer.vue 挂载。
  * - 状态持久化在 localStorage（两个窗口同源共享），变更时通过
  *   Tauri 事件 theme://changed 通知其它窗口即时刷新。
  * - 主题令牌在 styles/theme.css 中由 data-theme / data-skin 驱动，
- *   自定义皮肤通过 documentElement 上的内联 CSS 变量注入。
+ *   自定义皮肤与皮肤背景通过 documentElement 上的内联 CSS 变量注入。
  */
+
+import { buildSkinScenery } from "./scenery";
 
 export type ThemeMode = "light" | "dark" | "system";
 
@@ -23,10 +26,19 @@ export type AmbientEffectId =
   | "leaves"
   | "fireflies"
   | "stardust"
+  | "spark"
   | "matrix";
 
-/** 动效密度 */
+/** 背景动效密度 */
 export type AmbientDensity = "low" | "medium" | "high";
+
+/** 皮肤背景的两种画法：实景照片 / 纯 CSS 渐变风景 */
+export type BackdropStyle = "photo" | "gradient";
+
+export const BACKDROP_STYLE_OPTIONS: Array<{ value: BackdropStyle; label: string }> = [
+  { value: "photo", label: "实景照片" },
+  { value: "gradient", label: "简约渐变" }
+];
 
 export const AMBIENT_EFFECT_OPTIONS: Array<{ value: AmbientEffectId; label: string }> = [
   { value: "none", label: "无（纯净）" },
@@ -36,6 +48,7 @@ export const AMBIENT_EFFECT_OPTIONS: Array<{ value: AmbientEffectId; label: stri
   { value: "leaves", label: "落叶纷飞" },
   { value: "fireflies", label: "萤火虫" },
   { value: "stardust", label: "星尘闪烁" },
+  { value: "spark", label: "光点上升" },
   { value: "matrix", label: "代码雨" }
 ];
 
@@ -68,12 +81,19 @@ export interface CustomSkinConfig {
   tintDark?: string;
   /** 自定义皮肤使用的背景动效 */
   effect?: AmbientEffectId;
+  /**
+   * 自定义背景图（压缩后的 data URL，可选）。
+   * 设置好后会替代自动生成的丘陵风景，铺满窗口并盖一层薄雾。
+   */
+  backgroundImage?: string;
 }
 
 export interface ThemeState {
   mode: ThemeMode;
   skin: string;
   customSkin: CustomSkinConfig | null;
+  /** 皮肤背景画法：实景照片 / 渐变风景 */
+  backdropStyle: BackdropStyle;
   /** 背景动效总开关 */
   effectsEnabled: boolean;
   /** 背景动效密度 */
@@ -140,6 +160,27 @@ export const BUILTIN_SKINS: SkinInfo[] = [
     description: "静谧优雅的紫，星尘闪烁",
     primary: "#7c5cd6",
     effect: "stardust"
+  },
+  {
+    id: "chinese-red",
+    name: "中国红",
+    description: "正红鎏金，祥云流金",
+    primary: "#c8102e",
+    effect: "stardust"
+  },
+  {
+    id: "chinese-ink",
+    name: "中国风",
+    description: "宣纸留白，水墨远山",
+    primary: "#55636f",
+    effect: "none"
+  },
+  {
+    id: "tech",
+    name: "科技",
+    description: "数字网格，霓虹光带",
+    primary: "#2f7bff",
+    effect: "spark"
   }
 ];
 
@@ -147,12 +188,17 @@ export const DEFAULT_THEME_STATE: ThemeState = {
   mode: "light",
   skin: "classic",
   customSkin: null,
+  backdropStyle: "photo",
   effectsEnabled: true,
   effectDensity: "medium"
 };
 
 export function isThemeMode(value: unknown): value is ThemeMode {
   return value === "light" || value === "dark" || value === "system";
+}
+
+export function isBackdropStyle(value: unknown): value is BackdropStyle {
+  return value === "photo" || value === "gradient";
 }
 
 export function isAmbientEffect(value: unknown): value is AmbientEffectId {
@@ -176,7 +222,8 @@ export function loadCustomSkin(): CustomSkinConfig | null {
       primary: parsed.primary,
       tintLight: normalizeTint(parsed.tintLight),
       tintDark: normalizeTint(parsed.tintDark),
-      effect: isAmbientEffect(parsed.effect) ? parsed.effect : "none"
+      effect: isAmbientEffect(parsed.effect) ? parsed.effect : "none",
+      backgroundImage: normalizeBackgroundImage(parsed.backgroundImage)
     };
   } catch {
     return null;
@@ -185,6 +232,13 @@ export function loadCustomSkin(): CustomSkinConfig | null {
 
 function normalizeTint(value: unknown): string | undefined {
   return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value) ? value : undefined;
+}
+
+/** 只接受图片类型的 data URL，避免把任意字符串塞进 CSS 的 url()。 */
+function normalizeBackgroundImage(value: unknown): string | undefined {
+  return typeof value === "string" && /^data:image\/(png|jpeg|webp|gif);base64,/.test(value)
+    ? value
+    : undefined;
 }
 
 function isValidSkin(skin: string, customSkin: CustomSkinConfig | null): boolean {
@@ -209,6 +263,7 @@ export function loadThemeState(): ThemeState {
         mode: isThemeMode(parsed.mode) ? parsed.mode : DEFAULT_THEME_STATE.mode,
         skin,
         customSkin,
+        backdropStyle: isBackdropStyle(parsed.backdropStyle) ? parsed.backdropStyle : DEFAULT_THEME_STATE.backdropStyle,
         effectsEnabled: parsed.effectsEnabled !== false,
         effectDensity: normalizeDensity(parsed.effectDensity)
       };
@@ -253,6 +308,14 @@ const CUSTOM_SKIN_VARS = [
   "--skin-bg-tint-dark"
 ] as const;
 
+/** 皮肤背景相关的内联变量（见 services/scenery.ts） */
+const SCENERY_VARS = [
+  "--skin-backdrop-image",
+  "--skin-backdrop-color",
+  "--skin-surface-alpha",
+  "--skin-glow-opacity"
+] as const;
+
 type ThemeAppliedListener = (state: ThemeState, resolvedDark: boolean) => void;
 
 const appliedListeners = new Set<ThemeAppliedListener>();
@@ -289,6 +352,18 @@ export function applyThemeState(state: ThemeState): boolean {
     root.style.setProperty("--accent-contrast", accentContrastFor(primary));
   }
 
+  // 皮肤背景：经典皮肤返回 null，此时清空变量回到纯净底色
+  for (const name of SCENERY_VARS) {
+    root.style.removeProperty(name);
+  }
+  const scenery = buildSkinScenery(skin, resolved === "dark", state.customSkin, state.backdropStyle);
+  if (scenery) {
+    root.style.setProperty("--skin-backdrop-image", scenery.image);
+    root.style.setProperty("--skin-backdrop-color", scenery.color);
+    root.style.setProperty("--skin-surface-alpha", `${scenery.surfaceAlpha}%`);
+    root.style.setProperty("--skin-glow-opacity", String(scenery.glowOpacity));
+  }
+
   for (const listener of appliedListeners) {
     try {
       listener(state, resolved === "dark");
@@ -319,6 +394,7 @@ function persistThemeState(state: ThemeState): void {
       JSON.stringify({
         mode: state.mode,
         skin: state.skin,
+        backdropStyle: state.backdropStyle,
         effectsEnabled: state.effectsEnabled,
         effectDensity: state.effectDensity
       })
@@ -343,6 +419,7 @@ async function broadcastThemeChange(state: ThemeState): Promise<void> {
     await emit(THEME_CHANGED_EVENT, {
       mode: state.mode,
       skin: state.skin,
+      backdropStyle: state.backdropStyle,
       effectsEnabled: state.effectsEnabled,
       effectDensity: state.effectDensity
     });
@@ -371,6 +448,13 @@ export async function setSkin(skinId: string): Promise<ThemeState> {
   return state;
 }
 
+export async function setBackdropStyle(style: BackdropStyle): Promise<ThemeState> {
+  const state = loadThemeState();
+  state.backdropStyle = style;
+  await commitThemeState(state);
+  return state;
+}
+
 export async function setEffectsEnabled(enabled: boolean): Promise<ThemeState> {
   const state = loadThemeState();
   state.effectsEnabled = enabled;
@@ -392,7 +476,8 @@ export async function saveCustomSkin(config: CustomSkinConfig): Promise<ThemeSta
     primary: config.primary,
     tintLight: normalizeTint(config.tintLight),
     tintDark: normalizeTint(config.tintDark),
-    effect: isAmbientEffect(config.effect) ? config.effect : "none"
+    effect: isAmbientEffect(config.effect) ? config.effect : "none",
+    backgroundImage: normalizeBackgroundImage(config.backgroundImage)
   };
   try {
     window.localStorage.setItem(CUSTOM_SKIN_STORAGE_KEY, JSON.stringify(normalized));
@@ -447,6 +532,7 @@ export async function initTheme(): Promise<void> {
     await listen<{
       mode: ThemeMode;
       skin: string;
+      backdropStyle?: BackdropStyle;
       effectsEnabled?: boolean;
       effectDensity?: AmbientDensity;
     }>(THEME_CHANGED_EVENT, (event) => {
@@ -455,6 +541,9 @@ export async function initTheme(): Promise<void> {
         mode: isThemeMode(payload?.mode) ? payload.mode : "light",
         skin: typeof payload?.skin === "string" ? payload.skin : "classic",
         customSkin: loadCustomSkin(),
+        backdropStyle: isBackdropStyle(payload?.backdropStyle)
+          ? payload.backdropStyle
+          : DEFAULT_THEME_STATE.backdropStyle,
         effectsEnabled: payload?.effectsEnabled !== false,
         effectDensity: normalizeDensity(payload?.effectDensity)
       };

@@ -43,6 +43,43 @@ function toggleTheme() {
   void setThemeMode(resolvedDark.value ? "light" : "dark");
 }
 
+/**
+ * 无边框窗口的自定义标题栏按钮。
+ * 先用 try 兜住 import：浏览器里预览页面时没有 Tauri 运行时，
+ * 三个按钮静默失效，不影响其它功能。
+ */
+const isMaximized = ref(false);
+let unlistenWindowResize: (() => void) | null = null;
+
+async function currentWindow() {
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    return getCurrentWindow();
+  } catch {
+    return null;
+  }
+}
+
+async function minimizeWindow() {
+  const window = await currentWindow();
+  if (!window) return;
+  await window.minimize().catch(() => undefined);
+}
+
+async function toggleMaximizeWindow() {
+  const window = await currentWindow();
+  if (!window) return;
+  await window.toggleMaximize().catch(() => undefined);
+  isMaximized.value = await window.isMaximized().catch(() => false);
+}
+
+/** ✕ 与原来点系统关闭按钮的行为保持一致：隐藏到托盘，而不是退出应用 */
+async function hideMainWindow() {
+  const window = await currentWindow();
+  if (!window) return;
+  await window.hide().catch(() => undefined);
+}
+
 const selectedItem = computed(() => {
   if (selectedId.value != null) {
     return items.value.find((item) => item.id === selectedId.value) ?? null;
@@ -290,6 +327,22 @@ onMounted(async () => {
   currentHotkey.value = await getHotkey();
   // 加载自启动状态
   autostart.value = await isAutostartEnabled();
+
+  // 窗口最大化状态：决定标题栏按钮显示"最大化"还是"向下还原"图标
+  const window = await currentWindow();
+  if (window) {
+    isMaximized.value = await window.isMaximized().catch(() => false);
+    unlistenWindowResize = await window
+      .onResized(() => {
+        void window
+          .isMaximized()
+          .then((value) => {
+            isMaximized.value = value;
+          })
+          .catch(() => undefined);
+      })
+      .catch(() => null);
+  }
   
   try {
     const unlisten = await subscribeClipboardUpdates(() => {
@@ -304,6 +357,7 @@ onMounted(async () => {
 });
 onBeforeUnmount(() => {
   themeObserver?.disconnect();
+  unlistenWindowResize?.();
   if (unlistenHandle.value) {
     unlistenHandle.value();
   }
@@ -319,12 +373,15 @@ watch(customDate, () => {
 <template>
   <div class="app-shell">
     <AmbientLayer />
-    <div class="toolbar">
-      <div class="toolbar-title">Xpaste</div>
+    <!-- 窗口无系统边框（decorations:false），这条工具栏同时充当标题栏：
+         整条可拖动，右侧是自绘的最小化 / 最大化 / 关闭按钮 -->
+    <div class="toolbar" data-tauri-drag-region>
       <el-tabs v-model="activeTab" class="main-tabs">
         <el-tab-pane label="剪贴板" name="clipboard" />
         <el-tab-pane label="历史管理" name="history" />
       </el-tabs>
+      <!-- 中间的空白拖拽区：窗口靠它拖动，双击可最大化 -->
+      <div class="toolbar-drag" data-tauri-drag-region></div>
       <el-button
         :title="resolvedDark ? '切换到浅色模式' : '切换到深色模式'"
         @click="toggleTheme"
@@ -335,6 +392,33 @@ watch(customDate, () => {
         </el-icon>
       </el-button>
       <el-button @click="openSettingsDialog">设置</el-button>
+      <div class="window-controls">
+        <button type="button" class="window-btn" title="最小化" @click="minimizeWindow">
+          <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10" /></svg>
+        </button>
+        <button
+          type="button"
+          class="window-btn"
+          :title="isMaximized ? '向下还原' : '最大化'"
+          @click="toggleMaximizeWindow"
+        >
+          <svg v-if="isMaximized" viewBox="0 0 10 10" aria-hidden="true">
+            <rect x="0.5" y="2.5" width="7" height="7" />
+            <path d="M2.5 2.5V0.5h7v7h-2" />
+          </svg>
+          <svg v-else viewBox="0 0 10 10" aria-hidden="true">
+            <rect x="0.5" y="0.5" width="9" height="9" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="window-btn window-btn-close"
+          title="隐藏到托盘"
+          @click="hideMainWindow"
+        >
+          <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0L0 10" /></svg>
+        </button>
+      </div>
     </div>
 
     <!-- 剪贴板页面 -->

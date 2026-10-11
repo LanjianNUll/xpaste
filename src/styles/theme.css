@@ -5,12 +5,21 @@
  * - data-skin="xxx" 只定义皮肤主色 --skin-primary 与可选的背景色调，
  *   其余衍生色（选中态、悬停态、Element Plus light-N 系列）由 color-mix
  *   按当前主题自动推导，因此任意皮肤 × 任意主题都能组合出协调的配色。
+ * - 皮肤背景（--skin-backdrop-image / --skin-backdrop-color）与面板透出
+ *   程度（--skin-surface-alpha）由 services/scenery.ts 内联注入：
+ *   经典皮肤不注入，面板保持完全不透明；其余皮肤注入后，面板变成
+ *   半透明"磨砂"表面，让 .skin-backdrop 背景风景透出来。
  * - 自定义皮肤由 theme.ts 通过内联样式注入同名变量，无需静态 CSS。
  */
 
 :root {
   --accent-contrast: #ffffff;
   --skin-glow: none;
+  /* 皮肤背景默认值：无背景、面板不透明、色晕沿用旧强度 */
+  --skin-backdrop-image: none;
+  --skin-backdrop-color: transparent;
+  --skin-surface-alpha: 100%;
+  --skin-glow-opacity: 0.5;
 }
 
 /* ========== 内置皮肤：主色、背景色调与氛围色晕（AmbientLayer 渲染） ========== */
@@ -97,6 +106,36 @@
     radial-gradient(46% 38% at -8% 110%, rgba(190, 170, 235, 0.24), transparent 70%);
 }
 
+:root[data-skin="chinese-red"] {
+  --skin-primary: #c8102e;
+  --skin-primary-hover: #a80c26;
+  --skin-bg-tint-light: #fdf3f4;
+  --skin-bg-tint-dark: #1e1114;
+  --skin-glow:
+    radial-gradient(58% 46% at 84% 2%, rgba(214, 60, 78, 0.26), transparent 70%),
+    radial-gradient(46% 38% at -6% 106%, rgba(255, 205, 110, 0.24), transparent 70%);
+}
+
+:root[data-skin="chinese-ink"] {
+  --skin-primary: #55636f;
+  --skin-primary-hover: #414d58;
+  --skin-bg-tint-light: #f6f3ec;
+  --skin-bg-tint-dark: #16191d;
+  --skin-glow:
+    radial-gradient(56% 44% at 86% -8%, rgba(120, 136, 150, 0.22), transparent 70%),
+    radial-gradient(44% 38% at -8% 108%, rgba(150, 164, 176, 0.2), transparent 70%);
+}
+
+:root[data-skin="tech"] {
+  --skin-primary: #2f7bff;
+  --skin-primary-hover: #1f66e0;
+  --skin-bg-tint-light: #f1f6ff;
+  --skin-bg-tint-dark: #0e1526;
+  --skin-glow:
+    radial-gradient(58% 44% at 86% -10%, rgba(70, 140, 255, 0.26), transparent 70%),
+    radial-gradient(46% 38% at -8% 110%, rgba(80, 200, 255, 0.2), transparent 70%);
+}
+
 /* 深色主题下降低色晕强度，保持克制 */
 :root[data-theme="dark"][data-skin="spring"],
 :root[data-theme="dark"][data-skin="summer"],
@@ -104,7 +143,10 @@
 :root[data-theme="dark"][data-skin="winter"],
 :root[data-theme="dark"][data-skin="anime"],
 :root[data-theme="dark"][data-skin="geek"],
-:root[data-theme="dark"][data-skin="lavender"] {
+:root[data-theme="dark"][data-skin="lavender"],
+:root[data-theme="dark"][data-skin="chinese-red"],
+:root[data-theme="dark"][data-skin="chinese-ink"],
+:root[data-theme="dark"][data-skin="tech"] {
   --skin-glow:
     radial-gradient(54% 44% at 86% -10%, var(--skin-glow-dark-a, rgba(255, 255, 255, 0.07)), transparent 70%),
     radial-gradient(46% 40% at -8% 110%, var(--skin-glow-dark-b, rgba(255, 255, 255, 0.05)), transparent 70%);
@@ -145,6 +187,21 @@
   --skin-glow-dark-b: rgba(90, 70, 160, 0.18);
 }
 
+:root[data-theme="dark"][data-skin="chinese-red"] {
+  --skin-glow-dark-a: rgba(206, 50, 68, 0.16);
+  --skin-glow-dark-b: rgba(150, 90, 30, 0.18);
+}
+
+:root[data-theme="dark"][data-skin="chinese-ink"] {
+  --skin-glow-dark-a: rgba(130, 150, 170, 0.11);
+  --skin-glow-dark-b: rgba(90, 105, 120, 0.16);
+}
+
+:root[data-theme="dark"][data-skin="tech"] {
+  --skin-glow-dark-a: rgba(60, 140, 255, 0.15);
+  --skin-glow-dark-b: rgba(50, 180, 240, 0.13);
+}
+
 /* ========== 浅色主题：中性色与衍生色 ========== */
 
 :root[data-theme="light"] {
@@ -153,9 +210,10 @@
   --accent: var(--skin-primary);
   --accent-hover: var(--skin-primary-hover, color-mix(in srgb, var(--skin-primary) 85%, #000000));
   --bg: var(--skin-bg-tint-light, #f3f3f3);
-  --panel: #ffffff;
-  --panel-alt: #f7f7f7;
-  --panel-subtle: #fafafa;
+  /* 面板透出背景风景：--skin-surface-alpha 由皮肤注入，经典皮肤为 100% */
+  --panel: color-mix(in srgb, #ffffff var(--skin-surface-alpha), transparent);
+  --panel-alt: color-mix(in srgb, #f7f7f7 var(--skin-surface-alpha), transparent);
+  --panel-subtle: color-mix(in srgb, #fafafa var(--skin-surface-alpha), transparent);
   --text: #1b1b1b;
   --text-soft: #3b3b3b;
   --muted: #616161;
@@ -166,9 +224,9 @@
   --control-bg-hover: #f2f2f2;
   --control-ring: #8a8a8a;
   --control-ring-hover: #4f4f4f;
-  --hover-bg: color-mix(in srgb, var(--skin-primary) 7%, #ffffff);
-  --selection-bg: color-mix(in srgb, var(--skin-primary) 12%, #ffffff);
-  --selection-border: color-mix(in srgb, var(--skin-primary) 45%, #ffffff);
+  --hover-bg: color-mix(in srgb, var(--skin-primary) 8%, transparent);
+  --selection-bg: color-mix(in srgb, var(--skin-primary) 14%, transparent);
+  --selection-border: color-mix(in srgb, var(--skin-primary) 52%, transparent);
   --image-bg: #ffffff;
   --scrollbar-track: #f0f0f0;
   --scrollbar-thumb: #8a8a8a;
@@ -196,9 +254,9 @@
   --accent: var(--skin-primary-effective);
   --accent-hover: color-mix(in srgb, var(--skin-primary-effective) 85%, #ffffff);
   --bg: var(--skin-bg-tint-dark, #202020);
-  --panel: #2b2b2b;
-  --panel-alt: #242424;
-  --panel-subtle: #262626;
+  --panel: color-mix(in srgb, #2b2b2b var(--skin-surface-alpha), transparent);
+  --panel-alt: color-mix(in srgb, #242424 var(--skin-surface-alpha), transparent);
+  --panel-subtle: color-mix(in srgb, #262626 var(--skin-surface-alpha), transparent);
   --text: #f0f0f0;
   --text-soft: #d5d5d5;
   --muted: #9b9b9b;
@@ -209,9 +267,9 @@
   --control-bg-hover: #3b3b3b;
   --control-ring: #6a6a6a;
   --control-ring-hover: #9a9a9a;
-  --hover-bg: color-mix(in srgb, var(--skin-primary-effective) 13%, #2b2b2b);
-  --selection-bg: color-mix(in srgb, var(--skin-primary-effective) 24%, #2b2b2b);
-  --selection-border: color-mix(in srgb, var(--skin-primary-effective) 62%, #2b2b2b);
+  --hover-bg: color-mix(in srgb, var(--skin-primary-effective) 13%, transparent);
+  --selection-bg: color-mix(in srgb, var(--skin-primary-effective) 24%, transparent);
+  --selection-border: color-mix(in srgb, var(--skin-primary-effective) 62%, transparent);
   --image-bg: #1e1e1e;
   --scrollbar-track: #2a2a2a;
   --scrollbar-thumb: #5c5c5c;

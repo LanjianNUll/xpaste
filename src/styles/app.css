@@ -23,6 +23,27 @@ body {
   min-height: 100vh;
 }
 
+/*
+ * 皮肤背景风景层（由 AmbientLayer 渲染，见 services/scenery.ts）。
+ *
+ * 固定铺满窗口并压在 z-index:-1：body 的底色会被提升为画布背景绘制在
+ * 最底层，因此这一层刚好落在"body 底色之上、所有面板之下"。面板通过
+ * --skin-surface-alpha 半透明后，背景就会从面板后面透出来，而文字始终
+ * 在面板之上，不会被背景影响可读性。
+ * 经典皮肤不注入 --skin-backdrop-image，此层自动保持完全透明。
+ */
+.skin-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-color: var(--skin-backdrop-color);
+  background-image: var(--skin-backdrop-image);
+  background-size: cover;
+  background-position: center center;
+  background-repeat: no-repeat;
+}
+
 button,
 input,
 textarea,
@@ -51,10 +72,19 @@ select {
   display: flex;
   align-items: center;
   gap: 12px;
+  /* 工具栏同时是自定义标题栏：拖动时不要选中文字 */
+  user-select: none;
+}
+
+/* 无系统边框后，工具栏中间的空白区域负责拖动窗口（双击最大化由 Tauri 处理） */
+.toolbar-drag {
+  flex: 1;
+  align-self: stretch;
+  min-width: 12px;
 }
 
 .main-tabs {
-  flex: 1;
+  flex: 0 0 auto;
 }
 
 .main-tabs .el-tabs__header {
@@ -82,9 +112,52 @@ select {
   overflow: hidden;
 }
 
-.toolbar-title {
-  font-weight: 600;
-  font-size: 16px;
+/* ========== 自定义标题栏的窗口按钮（最小化 / 最大化 / 关闭） ========== */
+
+.window-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 2px;
+}
+
+.window-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.window-btn svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+}
+
+.window-btn:hover {
+  background: var(--control-bg-hover);
+  color: var(--text);
+}
+
+.window-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* 关闭按钮沿用 Windows 的红色悬停反馈 */
+.window-btn-close:hover {
+  background: #c42b1c;
+  color: #ffffff;
 }
 
 .content {

@@ -291,6 +291,40 @@ const stardust: EffectDef = {
   }
 };
 
+/** 光点上升：青白色数据微粒缓缓上浮，呼吸式发光（科技） */
+const spark: EffectDef = {
+  count: (area, f) => Math.round(Math.min(90, Math.max(8, (area / (1000 * 720)) * BASE_COUNT * 0.75 * f))),
+  init(p, w, h, scatter) {
+    p.x = rand(0, w);
+    p.y = scatter ? rand(0, h) : h + rand(10, 70);
+    p.vx = rand(-7, 7);
+    p.vy = -rand(12, 38);
+    p.r = rand(0.8, 2.1);
+    p.a = rand(0.35, 0.8);
+    p.phase = rand(0, TAU);
+    p.freq = rand(0.8, 2.4);
+  },
+  update(p, w, h, dt, time) {
+    p.y += p.vy * dt;
+    p.x += (p.vx + Math.sin(time * p.freq + p.phase) * 6) * dt;
+    if (p.y < -14 || p.x < -14 || p.x > w + 14) return false;
+    return true;
+  },
+  draw({ ctx, dark }, p) {
+    const pulse = 0.35 + 0.65 * Math.abs(Math.sin(p.freq * p.phase));
+    const a = p.a * pulse;
+    const rgb = dark ? "132, 218, 255" : "40, 118, 216";
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r * 5);
+    g.addColorStop(0, `rgba(${rgb},${a})`);
+    g.addColorStop(0.35, `rgba(${rgb},${a * 0.35})`);
+    g.addColorStop(1, `rgba(${rgb},0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r * 5, 0, TAU);
+    ctx.fill();
+  }
+};
+
 /** 代码雨：终端字符列（极客），亮头暗尾，速度各异 */
 const MATRIX_CHARS = "01<>{}[]();=+-*/#$%&@アイウエオカキクケサシスセ";
 const matrix: EffectDef = {
@@ -353,6 +387,7 @@ const EFFECTS: Record<EffectId, EffectDef> = {
   leaves,
   fireflies,
   stardust,
+  spark,
   matrix
 };
 

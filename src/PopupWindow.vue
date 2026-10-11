@@ -333,6 +333,11 @@ function handleWindowBlur() {
   hidePopup().catch(() => undefined);
 }
 
+/** 自绘标题栏上的关闭按钮：与 Esc、失焦一致，只隐藏窗口 */
+function handleCloseClick() {
+  hidePopup().catch(() => undefined);
+}
+
 function loadSearchHistory() {
   try {
     const raw = window.localStorage.getItem(SEARCH_HISTORY_KEY);
@@ -565,8 +570,8 @@ watch(customDate, () => {
 <template>
   <div class="popup-shell">
     <AmbientLayer />
-    <!-- 常驻单行：搜索框 + 筛选按钮，其余筛选条件全部收进下方面板 -->
-    <div class="search-toolbar">
+    <!-- 无系统边框的浮层：这条工具条同时充当拖拽区（点空白处可移动窗口） -->
+    <div class="search-toolbar" data-tauri-drag-region>
       <el-input
         ref="searchInputRef"
         v-model="keyword"
@@ -587,6 +592,9 @@ watch(customDate, () => {
         <span>筛选</span>
         <span v-if="activeFilterCount > 0" class="filter-badge">{{ activeFilterCount }}</span>
         <el-icon class="filter-arrow" :class="{ 'is-open': filterExpanded }"><ArrowDown /></el-icon>
+      </button>
+      <button type="button" class="popup-close" title="关闭（Esc）" @click="handleCloseClick">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0L0 10" /></svg>
       </button>
     </div>
 
@@ -751,17 +759,48 @@ watch(customDate, () => {
   flex-direction: column;
   background: var(--panel);
   overflow: hidden;
-  border-top: 1px solid var(--border);
+  /* 无系统边框后整窗由自己绘制，四周留一圈描边把浮层和桌面区分开 */
+  border: 1px solid var(--border);
 }
 
-/* 常驻工具条：只留搜索框 + 筛选按钮，整体高度压到最小 */
+/* 常驻工具条：只留搜索框 + 筛选 + 关闭，整体高度压到最小 */
 .search-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px;
+  grid-template-columns: minmax(0, 1fr) 72px 26px;
   gap: 6px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   background: var(--panel-subtle);
+}
+
+/* 自绘标题栏的关闭按钮 */
+.popup-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--control-bg);
+  color: var(--text);
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.popup-close svg {
+  width: 9px;
+  height: 9px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+}
+
+.popup-close:hover {
+  background: #c42b1c;
+  border-color: #c42b1c;
+  color: #ffffff;
 }
 
 .search-toolbar :deep(.el-input__wrapper) {
@@ -967,7 +1006,9 @@ watch(customDate, () => {
   flex: 1;
   overflow-y: auto;
   padding: 8px;
-  background: var(--panel);
+  /* 不再单独铺底色：交由 .popup-shell 一层半透明面板承担，
+     皮肤背景才能从列表后面透出来（经典皮肤下与原来外观一致） */
+  background: transparent;
 }
 
 .popup-body .history-item {
