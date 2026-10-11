@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import { ElMessage } from "element-plus";
+import { Moon, Sunny } from "@element-plus/icons-vue";
 import hljs from "highlight.js/lib/common";
 import type { ClipboardItem, DateRangeType, DateRange } from "@/types";
 import {
@@ -13,8 +14,11 @@ import {
   clearHistory,
   subscribeClipboardUpdates
 } from "@/services/api";
+import { setThemeMode } from "@/services/theme";
 import HistoryManager from "@/components/HistoryManager.vue";
 import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
+import ThemeSettings from "@/components/ThemeSettings.vue";
+import AmbientLayer from "@/components/AmbientLayer.vue";
 
 const query = ref("");
 const items = ref<ClipboardItem[]>([]);
@@ -24,9 +28,20 @@ const activeDate = ref<DateRangeType>("today");
 const customDate = ref<Date>(new Date());
 const currentHotkey = ref("Win+V");
 const showSettingsDialog = ref(false);
+const settingsTab = ref<"appearance" | "general">("appearance");
 const newHotkey = ref("");
 const autostart = ref(false);
 const activeTab = ref("clipboard");
+
+// 当前生效的深浅色（含"跟随系统"解析后的结果）。
+// 通过监听 html 的 data-theme 属性变化感知所有来源的切换：
+// 快捷按钮、设置面板、以及来自快捷窗口的同步事件。
+const resolvedDark = ref(document.documentElement.dataset.theme === "dark");
+let themeObserver: MutationObserver | null = null;
+
+function toggleTheme() {
+  void setThemeMode(resolvedDark.value ? "light" : "dark");
+}
 
 const selectedItem = computed(() => {
   if (selectedId.value != null) {
@@ -218,6 +233,7 @@ async function clearData() {
 async function openSettingsDialog() {
   newHotkey.value = currentHotkey.value;
   autostart.value = await isAutostartEnabled();
+  settingsTab.value = "appearance";
   showSettingsDialog.value = true;
 }
 
@@ -261,7 +277,15 @@ async function clearDataInSettings() {
 
 onMounted(async () => {
   await loadHistory();
-  
+
+  themeObserver = new MutationObserver(() => {
+    resolvedDark.value = document.documentElement.dataset.theme === "dark";
+  });
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme"]
+  });
+
   // 加载当前快捷键
   currentHotkey.value = await getHotkey();
   // 加载自启动状态
@@ -279,6 +303,7 @@ onMounted(async () => {
   }
 });
 onBeforeUnmount(() => {
+  themeObserver?.disconnect();
   if (unlistenHandle.value) {
     unlistenHandle.value();
   }
@@ -293,12 +318,22 @@ watch(customDate, () => {
 
 <template>
   <div class="app-shell">
+    <AmbientLayer />
     <div class="toolbar">
       <div class="toolbar-title">Xpaste</div>
       <el-tabs v-model="activeTab" class="main-tabs">
         <el-tab-pane label="剪贴板" name="clipboard" />
         <el-tab-pane label="历史管理" name="history" />
       </el-tabs>
+      <el-button
+        :title="resolvedDark ? '切换到浅色模式' : '切换到深色模式'"
+        @click="toggleTheme"
+      >
+        <el-icon>
+          <Sunny v-if="resolvedDark" />
+          <Moon v-else />
+        </el-icon>
+      </el-button>
       <el-button @click="openSettingsDialog">设置</el-button>
     </div>
 
@@ -402,34 +437,50 @@ watch(customDate, () => {
       <HistoryManager />
     </div>
     
-    <!-- 设置对话框 -->
-    <el-dialog v-model="showSettingsDialog" title="应用设置" width="450px">
-      <el-form label-width="100px">
-        <el-form-item label="全局快捷键">
-          <el-input
-            v-model="newHotkey"
-            placeholder="例如：Win+V, Ctrl+Shift+V"
-          />
-          <div style="margin-top: 4px; color: #999; font-size: 12px; line-height: 1.4;">
-            当前快捷键：<span style="color: var(--el-color-primary); font-weight: bold;">{{ currentHotkey }}</span><br>
-            支持的修饰键：Ctrl、Alt、Shift、Win<br>
-            支持的按键：A-Z 字母键。修改后可能需要重启应用生效。
-          </div>
-        </el-form-item>
+    <!-- 设置对话框：外观即时生效；通用项通过"保存"提交 -->
+    <el-dialog
+      v-model="showSettingsDialog"
+      title="设置"
+      width="min(620px, 94vw)"
+      top="6vh"
+      class="settings-dialog"
+    >
+      <el-tabs v-model="settingsTab">
+        <el-tab-pane label="外观" name="appearance">
+          <ThemeSettings :active="showSettingsDialog" />
+        </el-tab-pane>
 
-        <el-form-item label="开机启动">
-          <el-switch v-model="autostart" />
-          <span style="margin-left: 8px; color: #666; font-size: 14px;">应用随系统自动启动</span>
-        </el-form-item>
+        <el-tab-pane label="通用" name="general">
+          <el-form label-width="92px" class="general-form">
+            <el-form-item label="全局快捷键">
+              <el-input
+                v-model="newHotkey"
+                placeholder="例如：Win+V, Ctrl+Shift+V"
+              />
+              <div class="settings-tip">
+                当前快捷键：<span class="hotkey-value">{{ currentHotkey }}</span><br>
+                支持的修饰键：Ctrl、Alt、Shift、Win；按键：A-Z。修改后可能需要重启应用生效。
+              </div>
+            </el-form-item>
 
-        <el-form-item label="数据管理">
-          <el-button type="danger" @click="clearDataInSettings">清理存储</el-button>
-          <span style="margin-left: 8px; color: #666; font-size: 14px;">清空所有剪贴板历史记录</span>
-        </el-form-item>
-      </el-form>
+            <el-form-item label="开机启动">
+              <el-switch v-model="autostart" />
+              <span class="settings-tip" style="margin-left: 8px;">应用随系统自动启动</span>
+            </el-form-item>
+
+            <el-form-item label="数据管理">
+              <el-button type="danger" @click="clearDataInSettings">清理存储</el-button>
+              <span class="settings-tip" style="margin-left: 8px;">清空所有剪贴板历史记录</span>
+            </el-form-item>
+          </el-form>
+        </el-tab-pane>
+      </el-tabs>
       <template #footer>
-        <el-button @click="showSettingsDialog = false">取消</el-button>
-        <el-button type="primary" @click="saveSettings">保存</el-button>
+        <template v-if="settingsTab === 'general'">
+          <el-button @click="showSettingsDialog = false">取消</el-button>
+          <el-button type="primary" @click="saveSettings">保存</el-button>
+        </template>
+        <el-button v-else type="primary" @click="showSettingsDialog = false">完成</el-button>
       </template>
     </el-dialog>
   </div>

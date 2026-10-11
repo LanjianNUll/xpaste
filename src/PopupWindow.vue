@@ -12,6 +12,7 @@ import {
   subscribePopupShown
 } from "@/services/api";
 import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
+import AmbientLayer from "@/components/AmbientLayer.vue";
 
 const items = ref<ClipboardItem[]>([]);
 const loading = ref(false);
@@ -563,6 +564,7 @@ watch(customDate, () => {
 
 <template>
   <div class="popup-shell">
+    <AmbientLayer />
     <!-- 常驻单行：搜索框 + 筛选按钮，其余筛选条件全部收进下方面板 -->
     <div class="search-toolbar">
       <el-input
@@ -749,7 +751,7 @@ watch(customDate, () => {
   flex-direction: column;
   background: var(--panel);
   overflow: hidden;
-  border-top: 1px solid #d6d6d6;
+  border-top: 1px solid var(--border);
 }
 
 /* 常驻工具条：只留搜索框 + 筛选按钮，整体高度压到最小 */
@@ -759,7 +761,7 @@ watch(customDate, () => {
   gap: 6px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
-  background: #fafafa;
+  background: var(--panel-subtle);
 }
 
 .search-toolbar :deep(.el-input__wrapper) {
@@ -773,9 +775,9 @@ watch(customDate, () => {
   gap: 3px;
   height: 28px;
   padding: 0 6px;
-  border: 1px solid #b8b8b8;
+  border: 1px solid var(--border-strong);
   border-radius: 2px;
-  background: #ffffff;
+  background: var(--control-bg);
   color: var(--text);
   font-size: 12px;
   line-height: 1;
@@ -783,8 +785,8 @@ watch(customDate, () => {
 }
 
 .filter-toggle:hover {
-  background: #f2f2f2;
-  border-color: #767676;
+  background: var(--control-bg-hover);
+  border-color: var(--border-strong-hover);
 }
 
 .filter-toggle.is-active {
@@ -812,7 +814,7 @@ watch(customDate, () => {
   padding: 0 3px;
   border-radius: 7px;
   background: var(--accent);
-  color: #ffffff;
+  color: var(--accent-contrast);
   font-size: 10px;
   line-height: 14px;
   text-align: center;
@@ -826,7 +828,7 @@ watch(customDate, () => {
   overflow-y: auto;
   padding: 8px;
   border-bottom: 1px solid var(--border);
-  background: #fafafa;
+  background: var(--panel-subtle);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -866,9 +868,9 @@ watch(customDate, () => {
   flex: 1;
   height: 28px;
   padding: 0 4px;
-  border: 1px solid #b8b8b8;
+  border: 1px solid var(--border-strong);
   border-radius: 2px;
-  background: #ffffff;
+  background: var(--control-bg);
   color: var(--text);
   font-size: 12px;
   line-height: 1;
@@ -876,14 +878,14 @@ watch(customDate, () => {
 }
 
 .date-segment:hover {
-  background: #f2f2f2;
-  border-color: #767676;
+  background: var(--control-bg-hover);
+  border-color: var(--border-strong-hover);
 }
 
 .date-segment.is-active {
   background: var(--accent);
   border-color: var(--accent);
-  color: #ffffff;
+  color: var(--accent-contrast);
 }
 
 .filter-history {
@@ -957,7 +959,7 @@ watch(customDate, () => {
 }
 
 .search-history-item:hover {
-  background: #e5f3fb;
+  background: var(--selection-bg);
   color: var(--accent);
 }
 
@@ -965,13 +967,13 @@ watch(customDate, () => {
   flex: 1;
   overflow-y: auto;
   padding: 8px;
-  background: #ffffff;
+  background: var(--panel);
 }
 
 .popup-body .history-item {
   margin-bottom: 6px;
   padding: 9px 10px;
-  background: #f7f7f7;
+  background: var(--panel-alt);
 }
 
 .popup-body .history-item:last-child {
@@ -979,14 +981,14 @@ watch(customDate, () => {
 }
 
 .popup-body .history-item:hover {
-  background: #e5f3fb;
-  border-color: #99c9ed;
+  background: var(--hover-bg);
+  border-color: var(--selection-border);
 }
 
 .popup-body .history-item.is-active {
-  background: #e5f3fb;
-  border-color: #409eff;
-  box-shadow: inset 0 0 0 1px #409eff;
+  background: var(--selection-bg);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .popup-body .history-meta {
@@ -1022,9 +1024,9 @@ watch(customDate, () => {
 
 .copy-count {
   padding: 1px 6px;
-  color: #1769aa;
+  color: var(--accent);
   font-weight: 600;
-  background: #e5f3fb;
+  background: var(--selection-bg);
   border-radius: 10px;
 }
 
@@ -1043,7 +1045,7 @@ watch(customDate, () => {
   font-size: 11px;
   color: var(--muted);
   border-top: 1px solid var(--border);
-  background: #fafafa;
+  background: var(--panel-subtle);
 }
 
 /* 左侧常驻筛选摘要：面板收起时也知道当前看的是哪个范围 */
@@ -1116,6 +1118,6 @@ watch(customDate, () => {
   margin: auto;
   display: block;
   user-select: none;
-  background: #ffffff;
+  background: var(--image-bg);
 }
 </style>

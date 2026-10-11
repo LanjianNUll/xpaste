@@ -4,6 +4,44 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Xpaste</title>
+    <script>
+      // 应用加载前先恢复主题，避免出现白色闪烁（与 services/theme.ts 的存储约定保持一致）
+      (function () {
+        try {
+          var root = document.documentElement;
+          var state = null;
+          try {
+            state = JSON.parse(localStorage.getItem("xpaste.theme") || "null");
+          } catch (e) {}
+          var mode = state && state.mode ? state.mode : "light";
+          var skin = state && state.skin ? state.skin : "classic";
+          var dark =
+            mode === "dark" ||
+            (mode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (skin === "custom") {
+            var cfg = null;
+            try {
+              cfg = JSON.parse(localStorage.getItem("xpaste.customSkin") || "null");
+            } catch (e) {}
+            if (cfg && /^#[0-9a-fA-F]{6}$/.test(cfg.primary || "")) {
+              root.style.setProperty("--skin-primary", cfg.primary);
+              if (/^#[0-9a-fA-F]{6}$/.test(cfg.tintLight || "")) {
+                root.style.setProperty("--skin-bg-tint-light", cfg.tintLight);
+              }
+              if (/^#[0-9a-fA-F]{6}$/.test(cfg.tintDark || "")) {
+                root.style.setProperty("--skin-bg-tint-dark", cfg.tintDark);
+              }
+              root.style.setProperty("--accent-contrast", "#ffffff");
+            } else {
+              skin = "classic";
+            }
+          }
+          root.dataset.theme = dark ? "dark" : "light";
+          root.dataset.skin = skin;
+          root.classList.toggle("dark", dark);
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

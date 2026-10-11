@@ -1,0 +1,237 @@
+/*
+ * 主题与皮肤体系（层叠顺序：主题 → 皮肤 → Element Plus 变量映射）
+ *
+ * - data-theme="light|dark" 定义中性色（面板/文字/边框/滚动条等）。
+ * - data-skin="xxx" 只定义皮肤主色 --skin-primary 与可选的背景色调，
+ *   其余衍生色（选中态、悬停态、Element Plus light-N 系列）由 color-mix
+ *   按当前主题自动推导，因此任意皮肤 × 任意主题都能组合出协调的配色。
+ * - 自定义皮肤由 theme.ts 通过内联样式注入同名变量，无需静态 CSS。
+ */
+
+:root {
+  --accent-contrast: #ffffff;
+  --skin-glow: none;
+}
+
+/* ========== 内置皮肤：主色、背景色调与氛围色晕（AmbientLayer 渲染） ========== */
+
+:root[data-skin="classic"],
+:root:not([data-skin]) {
+  --skin-primary: #0078d4;
+  --skin-primary-hover: #106ebe;
+}
+
+/* 自定义皮肤的默认主色（配置损坏时兜底，正常情况由内联变量覆盖） */
+:root[data-skin="custom"] {
+  --skin-primary: #e63946;
+  --skin-primary-hover: #c81e3a;
+}
+
+:root[data-skin="spring"] {
+  --skin-primary: #4caf6d;
+  --skin-primary-hover: #3d9a5d;
+  --skin-bg-tint-light: #f1f8f1;
+  --skin-bg-tint-dark: #151b15;
+  --skin-glow:
+    radial-gradient(52% 44% at 88% -8%, rgba(122, 182, 128, 0.30), transparent 70%),
+    radial-gradient(46% 40% at -8% 110%, rgba(170, 214, 170, 0.26), transparent 70%);
+}
+
+:root[data-skin="summer"] {
+  --skin-primary: #0891b2;
+  --skin-primary-hover: #0e7490;
+  --skin-bg-tint-light: #effafc;
+  --skin-bg-tint-dark: #122024;
+  --skin-glow:
+    radial-gradient(56% 42% at 80% -10%, rgba(64, 190, 210, 0.28), transparent 70%),
+    radial-gradient(44% 38% at -6% 108%, rgba(88, 200, 180, 0.22), transparent 70%);
+}
+
+:root[data-skin="autumn"] {
+  --skin-primary: #d97706;
+  --skin-primary-hover: #b45309;
+  --skin-bg-tint-light: #fdf8ef;
+  --skin-bg-tint-dark: #1f1913;
+  --skin-glow:
+    radial-gradient(54% 44% at 86% -10%, rgba(235, 168, 92, 0.30), transparent 70%),
+    radial-gradient(46% 38% at -8% 110%, rgba(220, 140, 80, 0.22), transparent 70%);
+}
+
+:root[data-skin="winter"] {
+  --skin-primary: #547bb0;
+  --skin-primary-hover: #40648f;
+  --skin-bg-tint-light: #f3f7fb;
+  --skin-bg-tint-dark: #161a20;
+  --skin-glow:
+    radial-gradient(56% 44% at 84% -10%, rgba(140, 180, 226, 0.30), transparent 70%),
+    radial-gradient(46% 40% at -8% 108%, rgba(170, 205, 235, 0.24), transparent 70%);
+}
+
+:root[data-skin="anime"] {
+  --skin-primary: #ec4899;
+  --skin-primary-hover: #db2777;
+  --skin-bg-tint-light: #fdf2f8;
+  --skin-bg-tint-dark: #1f1520;
+  --skin-glow:
+    radial-gradient(54% 42% at 86% -10%, rgba(244, 143, 177, 0.30), transparent 70%),
+    radial-gradient(46% 38% at -6% 110%, rgba(248, 187, 208, 0.26), transparent 70%);
+}
+
+:root[data-skin="geek"] {
+  --skin-primary: #1fce6d;
+  --skin-primary-hover: #17a85a;
+  --skin-bg-tint-light: #f1f7f2;
+  --skin-bg-tint-dark: #0e1611;
+  --skin-glow:
+    radial-gradient(52% 42% at 88% -8%, rgba(70, 190, 120, 0.24), transparent 70%),
+    radial-gradient(44% 38% at -8% 110%, rgba(50, 160, 100, 0.20), transparent 70%);
+}
+
+:root[data-skin="lavender"] {
+  --skin-primary: #7c5cd6;
+  --skin-primary-hover: #6a4bc4;
+  --skin-bg-tint-light: #f7f5fd;
+  --skin-bg-tint-dark: #181522;
+  --skin-glow:
+    radial-gradient(54% 44% at 86% -10%, rgba(160, 140, 226, 0.28), transparent 70%),
+    radial-gradient(46% 38% at -8% 110%, rgba(190, 170, 235, 0.24), transparent 70%);
+}
+
+/* 深色主题下降低色晕强度，保持克制 */
+:root[data-theme="dark"][data-skin="spring"],
+:root[data-theme="dark"][data-skin="summer"],
+:root[data-theme="dark"][data-skin="autumn"],
+:root[data-theme="dark"][data-skin="winter"],
+:root[data-theme="dark"][data-skin="anime"],
+:root[data-theme="dark"][data-skin="geek"],
+:root[data-theme="dark"][data-skin="lavender"] {
+  --skin-glow:
+    radial-gradient(54% 44% at 86% -10%, var(--skin-glow-dark-a, rgba(255, 255, 255, 0.07)), transparent 70%),
+    radial-gradient(46% 40% at -8% 110%, var(--skin-glow-dark-b, rgba(255, 255, 255, 0.05)), transparent 70%);
+}
+
+:root[data-theme="dark"][data-skin="spring"] {
+  --skin-glow-dark-a: rgba(76, 175, 109, 0.13);
+  --skin-glow-dark-b: rgba(40, 90, 58, 0.20);
+}
+
+:root[data-theme="dark"][data-skin="summer"] {
+  --skin-glow-dark-a: rgba(50, 180, 200, 0.12);
+  --skin-glow-dark-b: rgba(40, 120, 110, 0.18);
+}
+
+:root[data-theme="dark"][data-skin="autumn"] {
+  --skin-glow-dark-a: rgba(220, 140, 60, 0.13);
+  --skin-glow-dark-b: rgba(150, 80, 40, 0.18);
+}
+
+:root[data-theme="dark"][data-skin="winter"] {
+  --skin-glow-dark-a: rgba(120, 160, 210, 0.13);
+  --skin-glow-dark-b: rgba(70, 100, 150, 0.18);
+}
+
+:root[data-theme="dark"][data-skin="anime"] {
+  --skin-glow-dark-a: rgba(236, 100, 160, 0.13);
+  --skin-glow-dark-b: rgba(140, 60, 110, 0.18);
+}
+
+:root[data-theme="dark"][data-skin="geek"] {
+  --skin-glow-dark-a: rgba(60, 200, 120, 0.10);
+  --skin-glow-dark-b: rgba(30, 110, 65, 0.16);
+}
+
+:root[data-theme="dark"][data-skin="lavender"] {
+  --skin-glow-dark-a: rgba(140, 110, 220, 0.14);
+  --skin-glow-dark-b: rgba(90, 70, 160, 0.18);
+}
+
+/* ========== 浅色主题：中性色与衍生色 ========== */
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --accent: var(--skin-primary);
+  --accent-hover: var(--skin-primary-hover, color-mix(in srgb, var(--skin-primary) 85%, #000000));
+  --bg: var(--skin-bg-tint-light, #f3f3f3);
+  --panel: #ffffff;
+  --panel-alt: #f7f7f7;
+  --panel-subtle: #fafafa;
+  --text: #1b1b1b;
+  --text-soft: #3b3b3b;
+  --muted: #616161;
+  --border: #d6d6d6;
+  --border-strong: #b8b8b8;
+  --border-strong-hover: #767676;
+  --control-bg: #ffffff;
+  --control-bg-hover: #f2f2f2;
+  --control-ring: #8a8a8a;
+  --control-ring-hover: #4f4f4f;
+  --hover-bg: color-mix(in srgb, var(--skin-primary) 7%, #ffffff);
+  --selection-bg: color-mix(in srgb, var(--skin-primary) 12%, #ffffff);
+  --selection-border: color-mix(in srgb, var(--skin-primary) 45%, #ffffff);
+  --image-bg: #ffffff;
+  --scrollbar-track: #f0f0f0;
+  --scrollbar-thumb: #8a8a8a;
+  --scrollbar-thumb-hover: #5f5f5f;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+  --shadow-soft: 0 1px 3px rgba(0, 0, 0, 0.08);
+
+  --el-color-primary: var(--accent);
+  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 70%, #ffffff);
+  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 50%, #ffffff);
+  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 30%, #ffffff);
+  --el-color-primary-light-8: color-mix(in srgb, var(--accent) 20%, #ffffff);
+  --el-color-primary-light-9: color-mix(in srgb, var(--accent) 10%, #ffffff);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--accent) 80%, #000000);
+}
+
+/* ========== 深色主题：中性色与衍生色 ========== */
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* 深色下主色自动提亮，保证对比度；皮肤可用 --skin-primary-dark 覆盖 */
+  --skin-primary-effective: var(--skin-primary-dark, color-mix(in srgb, var(--skin-primary) 72%, #ffffff));
+
+  --accent: var(--skin-primary-effective);
+  --accent-hover: color-mix(in srgb, var(--skin-primary-effective) 85%, #ffffff);
+  --bg: var(--skin-bg-tint-dark, #202020);
+  --panel: #2b2b2b;
+  --panel-alt: #242424;
+  --panel-subtle: #262626;
+  --text: #f0f0f0;
+  --text-soft: #d5d5d5;
+  --muted: #9b9b9b;
+  --border: #3d3d3d;
+  --border-strong: #565656;
+  --border-strong-hover: #7c7c7c;
+  --control-bg: #333333;
+  --control-bg-hover: #3b3b3b;
+  --control-ring: #6a6a6a;
+  --control-ring-hover: #9a9a9a;
+  --hover-bg: color-mix(in srgb, var(--skin-primary-effective) 13%, #2b2b2b);
+  --selection-bg: color-mix(in srgb, var(--skin-primary-effective) 24%, #2b2b2b);
+  --selection-border: color-mix(in srgb, var(--skin-primary-effective) 62%, #2b2b2b);
+  --image-bg: #1e1e1e;
+  --scrollbar-track: #2a2a2a;
+  --scrollbar-thumb: #5c5c5c;
+  --scrollbar-thumb-hover: #7d7d7d;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
+  --shadow-soft: 0 1px 3px rgba(0, 0, 0, 0.45);
+
+  --el-color-primary: var(--accent);
+  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 70%, #141414);
+  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 50%, #141414);
+  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 30%, #141414);
+  --el-color-primary-light-8: color-mix(in srgb, var(--accent) 20%, #141414);
+  --el-color-primary-light-9: color-mix(in srgb, var(--accent) 10%, #141414);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--accent) 80%, #ffffff);
+}
+
+/* ========== 主题相关的少量全局元素 ========== */
+
+mark {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: inherit;
+  border-radius: 1px;
+}

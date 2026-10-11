@@ -1,19 +1,10 @@
-﻿:root {
-  color-scheme: light;
-  --bg: #f3f3f3;
-  --panel: #ffffff;
-  --panel-alt: #f7f7f7;
-  --text: #1b1b1b;
-  --muted: #616161;
-  --accent: #0078d4;
-  --accent-hover: #106ebe;
-  --border: #d6d6d6;
-  --shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
-  --el-color-primary: #0078d4;
-  --el-color-primary-light-3: #3395dc;
-  --el-color-primary-light-5: #66ade5;
-  --el-color-primary-light-7: #99c9ed;
-  --el-color-primary-light-9: #e5f3fb;
+/*
+ * 应用基础样式：只保留布局与控件风格，颜色全部来自 theme.css 中
+ * 的主题令牌（--panel / --text / --selection-bg 等），
+ * 以便浅色、深色与各皮肤共享同一套结构样式。
+ */
+
+:root {
   --el-border-radius-base: 2px;
   --el-border-radius-small: 2px;
   --el-font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
@@ -56,7 +47,7 @@ select {
   border: 1px solid var(--border);
   border-radius: 2px;
   padding: 6px 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-soft);
   display: flex;
   align-items: center;
   gap: 12px;
@@ -87,7 +78,7 @@ select {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 2px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-soft);
   overflow: hidden;
 }
 
@@ -108,7 +99,7 @@ select {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 2px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-soft);
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -139,13 +130,13 @@ select {
 }
 
 .history-item:hover {
-  border-color: var(--accent);
-  background: #f0f6fa;
+  border-color: var(--selection-border);
+  background: var(--hover-bg);
 }
 
 .history-item.active {
-  background: #e5f3fb;
-  border-color: var(--accent);
+  background: var(--selection-bg);
+  border-color: var(--selection-border);
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
@@ -201,7 +192,7 @@ select {
   max-width: 100%;
   border-radius: 2px;
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--image-bg);
 }
 
 .preview-text {
@@ -222,15 +213,15 @@ select {
 /* 统一 Element Plus 控件为 Windows 10 桌面控件风格。 */
 .el-button {
   min-height: 32px;
-  border-color: #b8b8b8;
+  border-color: var(--border-strong);
   border-radius: 2px;
   font-weight: 400;
 }
 
 .el-button:not(.el-button--primary):not(.el-button--danger):not(.el-button--warning):hover {
   color: var(--text);
-  background: #f2f2f2;
-  border-color: #767676;
+  background: var(--control-bg-hover);
+  border-color: var(--border-strong-hover);
 }
 
 .el-button--primary {
@@ -248,13 +239,13 @@ select {
 .el-textarea__inner,
 .el-date-editor.el-input__wrapper {
   border-radius: 2px;
-  box-shadow: 0 0 0 1px #8a8a8a inset;
+  box-shadow: 0 0 0 1px var(--control-ring) inset;
 }
 
 .el-input__wrapper:hover,
 .el-select__wrapper:hover,
 .el-date-editor.el-input__wrapper:hover {
-  box-shadow: 0 0 0 1px #4f4f4f inset;
+  box-shadow: 0 0 0 1px var(--control-ring-hover) inset;
 }
 
 .el-tabs__active-bar {
@@ -263,7 +254,7 @@ select {
 }
 
 .el-tabs__item {
-  color: #3b3b3b;
+  color: var(--text-soft);
   font-weight: 400;
 }
 
@@ -295,7 +286,7 @@ select {
 
 .el-dialog__footer {
   padding: 12px 20px;
-  background: #f3f3f3;
+  background: var(--panel-alt);
   border-top: 1px solid var(--border);
 }
 
@@ -303,10 +294,38 @@ select {
   border-radius: 2px;
 }
 
+/* 设置对话框中的辅助说明文字 */
+.settings-tip {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.hotkey-value {
+  color: var(--el-color-primary);
+  font-weight: bold;
+}
+
+/* 设置弹框：小屏幕下限高滚动，内容不溢出 */
+.settings-dialog .el-dialog__body {
+  padding-top: 6px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.settings-dialog .el-tabs__header {
+  margin-bottom: 12px;
+}
+
+.general-form {
+  padding-right: 4px;
+}
+
 .el-table {
-  --el-table-header-bg-color: #f3f3f3;
-  --el-table-row-hover-bg-color: #e5f3fb;
-  --el-table-border-color: #dedede;
+  --el-table-header-bg-color: var(--panel-alt);
+  --el-table-row-hover-bg-color: var(--selection-bg);
+  --el-table-border-color: var(--border);
 }
 
 .el-pagination button,
@@ -320,16 +339,16 @@ select {
 }
 
 ::-webkit-scrollbar-track {
-  background: #f0f0f0;
+  background: var(--scrollbar-track);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #8a8a8a;
-  border: 3px solid #f0f0f0;
+  background: var(--scrollbar-thumb);
+  border: 3px solid var(--scrollbar-track);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #5f5f5f;
+  background: var(--scrollbar-thumb-hover);
 }
 
 @media (max-width: 960px) {

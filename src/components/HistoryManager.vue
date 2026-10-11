@@ -721,7 +721,7 @@ watch(() => filters.value.customDateRange, () => {
   justify-content: center;
   align-items: center;
   min-height: 400px;
-  background: #f3f3f3;
+  background: var(--panel-alt);
   border: 1px solid var(--border);
   border-radius: 2px;
 }
