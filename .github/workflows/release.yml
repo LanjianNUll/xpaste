@@ -353,6 +353,18 @@ jobs:
             echo "Apple签名配置就绪，将签名、公证并生成 .app.tar.gz 自动更新包"
             args+=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
             updater=true
+            # 把 Apple 签名/公证变量转写给后面的构建步骤（GITHUB_ENV 对之后所有步骤生效）。
+            # 只在配置了证书时才转写：tauri-bundler 只要看到
+            # APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD 两个变量存在，
+            # 哪怕值是空字符串也会去走 security import 导入证书，
+            # 空证书会直接报 SecKeychainItemImport 错误，ad-hoc 分支就挂了。
+            for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              {
+                echo "$name<<__APPLE_ENV_EOF__"
+                printf '%s\n' "${!name}"
+                echo "__APPLE_ENV_EOF__"
+              } >> "$GITHUB_ENV"
+            done
           else
             # 没有证书：用 ad-hoc 签名保证 dmg 能直接打开，代价是用户需手动放行 Gatekeeper
             echo "::warning::未配置 Apple 开发者签名（APPLE_CERTIFICATE / APPLE_SIGNING_IDENTITY），本次使用 ad-hoc 签名。用户首次打开需在 系统设置 - 隐私与安全性 中点仍要打开，配置方法见 README 的 macOS 构建一节。"
@@ -367,13 +379,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # 公证用；未配置时上面的判断已保证不会走到需要它们的分支
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Apple 签名/公证变量不能在这里无条件引用 secrets：未配置 Secret 时
+          # 那样会设成空字符串变量，tauri-bundler 看到变量存在就会走证书导入然后报错。
+          # 配置齐全时由上面「检查 macOS 签名与公证配置」一步按条件写入 GITHUB_ENV 传入。
         with:
           tagName: ${{ needs.version.outputs.tag }}
           releaseName: "Xpaste v${{ needs.version.outputs.version }}"
