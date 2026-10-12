@@ -182,7 +182,13 @@ fn apply_hotkey(app: &tauri::AppHandle, hotkey: &str) -> Result<(), String> {
     let _ = manager.unregister_all();
 
     manager
-        .on_shortcut(shortcut, move |app, _shortcut, _event| {
+        .on_shortcut(shortcut, move |app, _shortcut, event| {
+            // 快捷键的按下和松开各回调一次：只在按下时唤起面板。
+            // 若不过滤，松开时会再 toggle 一次，面板刚弹出就被关掉，
+            // 表现为「按住快捷键才能看到面板，一松手就消失」。
+            if event.state() != tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                return;
+            }
             let handle = app.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = window_controller::toggle_popup(&handle);
