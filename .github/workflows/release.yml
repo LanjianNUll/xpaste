@@ -205,6 +205,19 @@ jobs:
           args: ${{ steps.signing.outputs.args }}
           includeUpdaterJson: ${{ steps.signing.outputs.has_signing }}
 
+      # tauri-action@v0 复用已有 Release（强制重发）时只补产物，不更新标题与说明；
+      # 这里显式改成最新的标题和日志。新版 action 自带该逻辑，升级后可删此步。
+      - name: 更新 Release 标题与说明
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+          XP_NOTES: ${{ steps.notes.outputs.body }}
+        run: |
+          Set-Content -Path release-notes-final.md -Value $env:XP_NOTES -Encoding utf8
+          gh release edit $env:TAG --title "v${{ needs.version.outputs.version }}" --notes-file release-notes-final.md
+          Remove-Item release-notes-final.md
+
       # 让应用内"发现新版本"弹窗能显示更新日志：把说明同步进 latest.json
       # 这一步失败不影响发版，只警告
       - name: 同步更新日志到 latest.json
