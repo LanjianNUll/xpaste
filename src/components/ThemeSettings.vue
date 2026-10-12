@@ -291,8 +291,11 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="theme-settings">
-    <section class="ts-section">
-      <div class="ts-label">主题模式</div>
+    <section class="settings-card">
+      <div class="settings-card-title">
+        主题模式
+        <span class="settings-card-hint">浅色 / 深色 / 跟随系统</span>
+      </div>
       <div class="mode-options">
         <button
           v-for="option in modeOptions"
@@ -302,16 +305,16 @@ onBeforeUnmount(() => {
           :class="{ 'is-active': mode === option.value }"
           @click="handleSelectMode(option.value)"
         >
-          <el-icon :size="14"><component :is="option.icon" /></el-icon>
+          <el-icon :size="15"><component :is="option.icon" /></el-icon>
           <span>{{ option.label }}</span>
         </button>
       </div>
     </section>
 
-    <section class="ts-section">
-      <div class="ts-label">
+    <section class="settings-card">
+      <div class="settings-card-title">
         皮肤
-        <span class="ts-hint">每套皮肤自带专属背景风景与背景动效</span>
+        <span class="settings-card-hint">每套皮肤自带专属背景风景与背景动效</span>
       </div>
       <div class="skin-grid">
         <button
@@ -365,35 +368,8 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <section class="ts-section">
-      <div class="ts-label">背景动效</div>
-      <div class="effect-row">
-        <el-switch
-          :model-value="effectsEnabled"
-          @change="handleToggleEffects"
-        />
-        <span class="effect-state">{{ effectsEnabled ? "已开启" : "已关闭" }}</span>
-        <div class="effect-density" :class="{ 'is-disabled': !effectsEnabled }">
-          <button
-            v-for="option in AMBIENT_DENSITY_OPTIONS"
-            :key="option.value"
-            type="button"
-            class="density-segment"
-            :disabled="!effectsEnabled"
-            :class="{ 'is-active': effectDensity === option.value }"
-            @click="handleDensityChange(option.value)"
-          >
-            {{ option.label }}
-          </button>
-        </div>
-      </div>
-      <div class="ts-hint effect-hint">
-        粒子随皮肤变化（柳絮 / 落叶 / 飞雪 / 星尘…）；系统开启"减少动态效果"时自动停用。
-      </div>
-    </section>
-
-    <section class="ts-section">
-      <div class="ts-label">背景画法</div>
+    <section class="settings-card">
+      <div class="settings-card-title">背景画法</div>
       <div class="effect-row">
         <div class="effect-density">
           <button
@@ -415,10 +391,40 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
+    <section class="settings-card">
+      <div class="settings-card-title">
+        背景动效
+        <span class="settings-card-hint">粒子随皮肤变化（柳絮 / 落叶 / 飞雪 / 星尘…）</span>
+      </div>
+      <div class="effect-row">
+        <el-switch
+          :model-value="effectsEnabled"
+          @change="handleToggleEffects"
+        />
+        <span class="effect-state">{{ effectsEnabled ? "已开启" : "已关闭" }}</span>
+        <div class="effect-density" :class="{ 'is-disabled': !effectsEnabled }">
+          <button
+            v-for="option in AMBIENT_DENSITY_OPTIONS"
+            :key="option.value"
+            type="button"
+            class="density-segment"
+            :disabled="!effectsEnabled"
+            :class="{ 'is-active': effectDensity === option.value }"
+            @click="handleDensityChange(option.value)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+      </div>
+      <div class="ts-hint effect-hint">
+        系统开启"减少动态效果"时会自动停用。
+      </div>
+    </section>
+
     <!-- 自定义皮肤编辑器（高级） -->
-    <section v-if="editorVisible" class="ts-section custom-editor">
+    <section v-if="editorVisible" class="settings-card custom-editor">
       <div class="custom-editor-header">
-        <span class="ts-label">自定义皮肤</span>
+        <span class="settings-card-title" style="margin-bottom: 0;">自定义皮肤</span>
         <button type="button" class="text-btn" @click="closeEditor">收起</button>
       </div>
 
@@ -500,25 +506,15 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/*
+ * 外观设置内部样式。
+ * 外层卡片（.settings-card / .settings-card-title）由 app.css 提供，
+ * 这里只负责这个面板特有的控件：模式选择器、皮肤宫格、密度分段器、颜色编辑器。
+ */
 .theme-settings {
   display: flex;
   flex-direction: column;
   gap: 14px;
-}
-
-.ts-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.ts-label {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
 }
 
 .ts-hint {
@@ -527,6 +523,7 @@ onBeforeUnmount(() => {
   color: var(--muted);
 }
 
+/* 主题模式：图标 + 文案的胶囊按钮 */
 .mode-options {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -538,58 +535,62 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 32px;
-  border: 1px solid var(--border);
-  border-radius: 2px;
-  background: var(--control-bg);
+  height: 38px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-md);
+  background: var(--card-bg);
   color: var(--text);
   font-size: 13px;
   cursor: pointer;
-  transition: border-color 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color 0.12s ease, color 0.12s ease, background-color 0.12s ease;
 }
 
 .mode-option:hover {
-  background: var(--control-bg-hover);
+  background: var(--card-bg-hover);
+  border-color: var(--stroke-strong);
 }
 
 .mode-option.is-active {
   border-color: var(--accent);
+  background: var(--selection-bg);
   color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  font-weight: 600;
 }
 
+/* 皮肤宫格：缩略图占卡片主体，选中态用主色描边 + 轻微内发光 */
 .skin-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
 }
 
 .skin-card {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   padding: 6px;
-  border: 1px solid var(--border);
-  border-radius: 2px;
-  background: var(--panel-alt);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-lg);
+  background: var(--card-bg);
   cursor: pointer;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
 }
 
 .skin-card:hover {
-  border-color: var(--border-strong-hover);
+  border-color: var(--stroke-strong);
+  box-shadow: var(--shadow-soft);
 }
 
 .skin-card.is-active {
   border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  box-shadow: 0 0 0 2px var(--selection-border);
 }
 
 .skin-swatch {
   position: relative;
-  height: 26px;
-  border-radius: 2px;
-  border: 1px solid var(--border);
+  height: 46px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--stroke);
   overflow: hidden;
   /* 卡片预览用的是与窗口背景同一套渐变图层，缩略图按 cover 铺满 */
   background-size: cover;
@@ -603,27 +604,26 @@ onBeforeUnmount(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 3px;
+  height: 4px;
 }
 
 .skin-check {
   position: absolute;
-  right: 3px;
-  top: 50%;
-  transform: translateY(-50%);
-  background: rgba(255, 255, 255, 0.92);
+  right: 5px;
+  top: 5px;
+  background: var(--accent);
   border-radius: 50%;
-  padding: 1px;
-  color: #1b1b1b;
+  padding: 2px;
+  color: var(--accent-contrast);
 }
 
 .skin-swatch-create {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--panel-subtle);
+  background: var(--card-inset);
   color: var(--muted);
-  font-size: 15px;
+  font-size: 18px;
 }
 
 .skin-card-create {
@@ -660,26 +660,31 @@ onBeforeUnmount(() => {
   min-width: 44px;
 }
 
+/* 分段器：像 WorkBuddy 的胶囊选项组，选中项用主色填充 */
 .effect-density {
   display: inline-flex;
   gap: 0;
   margin-left: auto;
-  border: 1px solid var(--border);
-  border-radius: 2px;
+  padding: 2px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-pill);
+  background: var(--card-inset);
   overflow: hidden;
 }
 
 .density-segment {
-  padding: 4px 12px;
+  padding: 5px 14px;
   border: none;
-  background: var(--control-bg);
+  border-radius: var(--radius-pill);
+  background: transparent;
   color: var(--muted);
   font-size: 12px;
   cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
 }
 
-.density-segment + .density-segment {
-  border-left: 1px solid var(--border);
+.density-segment:hover:not(:disabled):not(.is-active) {
+  color: var(--text);
 }
 
 .density-segment:disabled {
@@ -690,35 +695,36 @@ onBeforeUnmount(() => {
 .density-segment.is-active {
   background: var(--accent);
   color: var(--accent-contrast);
+  font-weight: 600;
 }
 
 .effect-hint {
   line-height: 1.5;
+  margin-top: 8px;
 }
 
 .custom-editor {
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 2px;
-  background: var(--panel-alt);
+  border-color: var(--selection-border);
 }
 
 .custom-editor-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  margin-bottom: 12px;
 }
 
 .editor-grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 14px;
+  gap: 10px 16px;
+  margin-bottom: 12px;
 }
 
 .editor-field {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
 .editor-label {
@@ -734,6 +740,7 @@ onBeforeUnmount(() => {
 /* 背景图选择：原生 file input 只作为触发器，界面上只显示按钮 */
 .editor-field-wide {
   flex-wrap: wrap;
+  margin-bottom: 12px;
 }
 
 .hidden-file-input {
@@ -758,11 +765,14 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--stroke);
+  margin-bottom: 12px;
 }
 
 .preview-swatch {
   width: 110px;
-  height: 20px;
+  height: 40px;
   flex-shrink: 0;
 }
 
@@ -775,13 +785,10 @@ onBeforeUnmount(() => {
 .ts-footer-hint {
   font-size: 12px;
   color: var(--muted);
+  text-align: center;
 }
 
 @media (max-width: 560px) {
-  .skin-grid {
-    grid-template-columns: repeat(3, 1fr);
-  }
-
   .effect-density {
     margin-left: 0;
   }

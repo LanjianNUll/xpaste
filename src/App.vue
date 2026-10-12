@@ -24,7 +24,7 @@ import {
 } from "@/services/update";
 import HistoryManager from "@/components/HistoryManager.vue";
 import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
-import ThemeSettings from "@/components/ThemeSettings.vue";
+import SettingsShell from "@/components/SettingsShell.vue";
 import AmbientLayer from "@/components/AmbientLayer.vue";
 import UpdateDialog from "@/components/UpdateDialog.vue";
 
@@ -36,7 +36,6 @@ const activeDate = ref<DateRangeType>("today");
 const customDate = ref<Date>(new Date());
 const currentHotkey = ref("Win+V");
 const showSettingsDialog = ref(false);
-const settingsTab = ref<"appearance" | "general">("appearance");
 const newHotkey = ref("");
 const autostart = ref(false);
 const activeTab = ref("clipboard");
@@ -278,36 +277,47 @@ async function clearData() {
 async function openSettingsDialog() {
   newHotkey.value = currentHotkey.value;
   autostart.value = await isAutostartEnabled();
-  settingsTab.value = "appearance";
   showSettingsDialog.value = true;
 }
 
-async function saveSettings() {
-  let success = true;
-  
-  // 保存快捷键
-  if (newHotkey.value.trim() && newHotkey.value !== currentHotkey.value) {
-    try {
-      await setHotkey(newHotkey.value);
-      currentHotkey.value = newHotkey.value;
-    } catch (err) {
-      ElMessage.error("设置快捷键失败");
-      success = false;
-    }
-  }
-  
-  // 保存开机启动设置
+/**
+ * 开机启动开关：与外观设置一致，改动即时生效并写入系统启动项。
+ */
+async function handleAutostartChange(value: boolean) {
+  autostart.value = value;
   try {
-    await setAutostart(autostart.value);
+    await setAutostart(value);
+    ElMessage.success(value ? "已开启开机启动" : "已关闭开机启动");
   } catch (err) {
+    // 失败时回滚开关，避免界面显示与系统实际状态不一致
+    autostart.value = !value;
     ElMessage.error("设置开机启动失败");
-    success = false;
   }
-  
-  if (success) {
-    showSettingsDialog.value = false;
-    ElMessage.success("设置已保存");
+}
+
+/** 快捷键防抖句柄：输入过程中不反复调后端 */
+let hotkeyDebounce: number | null = null;
+
+/**
+ * 快捷键输入即时生效：停止输入 600ms 后写入，避免每敲一个字符就注册一次全局热键。
+ */
+function handleHotkeyChange(value: string) {
+  newHotkey.value = value;
+  if (hotkeyDebounce != null) {
+    window.clearTimeout(hotkeyDebounce);
   }
+  const next = value.trim();
+  if (!next || next === currentHotkey.value) return;
+  hotkeyDebounce = window.setTimeout(async () => {
+    try {
+      await setHotkey(next);
+      currentHotkey.value = next;
+      ElMessage.success(`快捷键已更新为 ${next}`);
+    } catch (err) {
+      newHotkey.value = currentHotkey.value;
+      ElMessage.error("设置快捷键失败");
+    }
+  }, 600);
 }
 
 async function clearDataInSettings() {
@@ -420,6 +430,9 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   themeObserver?.disconnect();
   unlistenWindowResize?.();
+  if (hotkeyDebounce != null) {
+    window.clearTimeout(hotkeyDebounce);
+  }
   if (unlistenHandle.value) {
     unlistenHandle.value();
   }
@@ -549,7 +562,7 @@ watch(customDate, () => {
           <template v-else-if="selectedItem.format === 'color'">
             <div style="display: flex; align-items: center; gap: 12px;">
               <div
-                style="width: 42px; height: 42px; border-radius: 2px; border: 1px solid var(--border);"
+                style="width: 42px; height: 42px; border-radius: var(--radius-sm); border: 1px solid var(--stroke);"
                 :style="{ background: selectedItem.color || selectedItem.text || '#fff' }"
               />
               <div class="preview-text">{{ selectedItem.color || selectedItem.text }}</div>
@@ -584,60 +597,29 @@ watch(customDate, () => {
       <HistoryManager />
     </div>
     
-    <!-- 设置对话框：外观即时生效；通用项通过"保存"提交 -->
+    <!-- 设置对话框：左侧图标导航 + 右侧内容卡片，外观即时生效 -->
     <el-dialog
       v-model="showSettingsDialog"
       title="设置"
-      width="min(620px, 94vw)"
+      width="min(880px, 94vw)"
       top="6vh"
       class="settings-dialog"
+      align-center
     >
-      <el-tabs v-model="settingsTab">
-        <el-tab-pane label="外观" name="appearance">
-          <ThemeSettings :active="showSettingsDialog" />
-        </el-tab-pane>
-
-        <el-tab-pane label="通用" name="general">
-          <el-form label-width="92px" class="general-form">
-            <el-form-item label="全局快捷键">
-              <el-input
-                v-model="newHotkey"
-                placeholder="例如：Win+V, Ctrl+Shift+V"
-              />
-              <div class="settings-tip">
-                当前快捷键：<span class="hotkey-value">{{ currentHotkey }}</span><br>
-                支持的修饰键：Ctrl、Alt、Shift、Win；按键：A-Z。修改后可能需要重启应用生效。
-              </div>
-            </el-form-item>
-
-            <el-form-item label="开机启动">
-              <el-switch v-model="autostart" />
-              <span class="settings-tip" style="margin-left: 8px;">应用随系统自动启动</span>
-            </el-form-item>
-
-            <el-form-item label="数据管理">
-              <el-button type="danger" @click="clearDataInSettings">清理存储</el-button>
-              <span class="settings-tip" style="margin-left: 8px;">清空所有剪贴板历史记录</span>
-            </el-form-item>
-
-            <el-form-item label="软件更新">
-              <el-button
-                :loading="updateChecking"
-                @click="handleUpdateAction"
-              >
-                {{ updateState.phase === "ready" ? "重启并安装" : "检查更新" }}
-              </el-button>
-              <span class="settings-tip" style="margin-left: 8px;">{{ updateStatusText }}</span>
-            </el-form-item>
-          </el-form>
-        </el-tab-pane>
-      </el-tabs>
+      <SettingsShell
+        :active="showSettingsDialog"
+        :current-hotkey="newHotkey"
+        :autostart="autostart"
+        :update-checking="updateChecking"
+        :update-status-text="updateStatusText"
+        :update-action-text="updateState.phase === 'ready' ? '重启并安装' : '检查更新'"
+        @update:current-hotkey="handleHotkeyChange"
+        @update:autostart="handleAutostartChange"
+        @clear-data="clearDataInSettings"
+        @update-action="handleUpdateAction"
+      />
       <template #footer>
-        <template v-if="settingsTab === 'general'">
-          <el-button @click="showSettingsDialog = false">取消</el-button>
-          <el-button type="primary" @click="saveSettings">保存</el-button>
-        </template>
-        <el-button v-else type="primary" @click="showSettingsDialog = false">完成</el-button>
+        <el-button type="primary" @click="showSettingsDialog = false">完成</el-button>
       </template>
     </el-dialog>
   </div>

@@ -667,7 +667,7 @@ watch(() => filters.value.customDateRange, () => {
   max-width: 60px;
   max-height: 60px;
   object-fit: cover;
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--el-border-color);
 }
 
@@ -685,7 +685,7 @@ watch(() => filters.value.customDateRange, () => {
 .color-block {
   width: 24px;
   height: 24px;
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--el-border-color);
   flex-shrink: 0;
 }
@@ -722,15 +722,15 @@ watch(() => filters.value.customDateRange, () => {
   align-items: center;
   min-height: 400px;
   background: var(--panel-alt);
-  border: 1px solid var(--border);
-  border-radius: 2px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-lg);
 }
 
 .preview-full-image {
   max-width: 100%;
   max-height: 80vh;
   object-fit: contain;
-  border-radius: 2px;
+  border-radius: var(--radius-md);
 }
 
 :deep(.image-preview-dialog) {

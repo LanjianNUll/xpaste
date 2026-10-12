@@ -127,8 +127,8 @@ async function handleRetryDownload() {
   padding: 10px 12px;
   max-height: 240px;
   overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: 2px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-md);
   background: var(--panel-alt);
   color: var(--text-soft);
   font-family: inherit;

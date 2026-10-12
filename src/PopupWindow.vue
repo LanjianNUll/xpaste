@@ -760,7 +760,7 @@ watch(customDate, () => {
   background: var(--panel);
   overflow: hidden;
   /* 无系统边框后整窗由自己绘制，四周留一圈描边把浮层和桌面区分开 */
-  border: 1px solid var(--border);
+  border: 1px solid var(--stroke);
 }
 
 /* 常驻工具条：只留搜索框 + 筛选 + 关闭，整体高度压到最小 */
@@ -769,7 +769,7 @@ watch(customDate, () => {
   grid-template-columns: minmax(0, 1fr) 72px 26px;
   gap: 6px;
   padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--stroke);
   background: var(--panel-subtle);
 }
 
@@ -781,8 +781,8 @@ watch(customDate, () => {
   width: 26px;
   height: 28px;
   padding: 0;
-  border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-sm);
   background: var(--control-bg);
   color: var(--text);
   cursor: pointer;
@@ -814,8 +814,8 @@ watch(customDate, () => {
   gap: 3px;
   height: 28px;
   padding: 0 6px;
-  border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-sm);
   background: var(--control-bg);
   color: var(--text);
   font-size: 12px;
@@ -848,10 +848,10 @@ watch(customDate, () => {
 }
 
 .filter-badge {
-  min-width: 14px;
+min-width: 14px;
   height: 14px;
   padding: 0 3px;
-  border-radius: 7px;
+  border-radius: var(--radius-pill);
   background: var(--accent);
   color: var(--accent-contrast);
   font-size: 10px;
@@ -866,7 +866,7 @@ watch(customDate, () => {
   max-height: 45%;
   overflow-y: auto;
   padding: 8px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--stroke);
   background: var(--panel-subtle);
   display: flex;
   flex-direction: column;
@@ -907,8 +907,8 @@ watch(customDate, () => {
   flex: 1;
   height: 28px;
   padding: 0 4px;
-  border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-sm);
   background: var(--control-bg);
   color: var(--text);
   font-size: 12px;
@@ -929,7 +929,7 @@ watch(customDate, () => {
 
 .filter-history {
   padding-top: 4px;
-  border-top: 1px dashed var(--border);
+  border-top: 1px dashed var(--stroke);
 }
 
 .search-history-header {
@@ -985,7 +985,7 @@ watch(customDate, () => {
   height: 24px;
   padding: 3px 6px;
   border: none;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text);
   font-size: 13px;
@@ -1064,11 +1064,11 @@ watch(customDate, () => {
 }
 
 .copy-count {
-  padding: 1px 6px;
+padding: 1px 6px;
   color: var(--accent);
   font-weight: 600;
   background: var(--selection-bg);
-  border-radius: 10px;
+  border-radius: var(--radius-pill);
 }
 
 .popup-body .history-preview {
@@ -1085,7 +1085,7 @@ watch(customDate, () => {
   padding: 5px 10px;
   font-size: 11px;
   color: var(--muted);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--stroke);
   background: var(--panel-subtle);
 }
 
