@@ -6,7 +6,6 @@
  *   node scripts/gen-release-notes.mjs                     # 用 package.json 的版本号，生成 release-notes/<版本>.md
  *   node scripts/gen-release-notes.mjs --stdout            # 只打印不写文件（发版工作流用这个）
  *   node scripts/gen-release-notes.mjs --version 2.0.9     # 指定版本号
- *   node scripts/gen-release-notes.mjs --summary "本版本重点实现 xx 功能"  # 写死一句话总结
  *   node scripts/gen-release-notes.mjs --from v2.0.7        # 手动指定对比起点 tag
  *   node scripts/gen-release-notes.mjs --force             # 覆盖已存在的日志文件
  *
@@ -124,11 +123,9 @@ function getRepoUrl() {
   }
 }
 
-/** 组装成最终 Markdown */
-function renderNotes({ version, tag, previousTag, summary, groups }) {
-  const lines = [`## 🎉 Xpaste v${version}`, ""];
-  lines.push(summary || "（一句话说明这个版本的重点，可编辑本文件补充）");
-  lines.push("");
+/** 组装成最终 Markdown（版本标题由 Release 名称承担，正文只放分组条目与对比链接） */
+function renderNotes({ tag, previousTag, groups }) {
+  const lines = [];
 
   for (const group of groups) {
     lines.push(`### ${group.title}`, "");
@@ -148,7 +145,7 @@ function renderNotes({ version, tag, previousTag, summary, groups }) {
 
 /** 解析命令行参数 */
 function parseArgs(argv) {
-  const args = { stdout: false, force: false, version: null, from: null, to: "HEAD", summary: "", out: null };
+  const args = { stdout: false, force: false, version: null, from: null, to: "HEAD", out: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--stdout") args.stdout = true;
@@ -156,7 +153,6 @@ function parseArgs(argv) {
     else if (arg === "--version") args.version = argv[(i += 1)];
     else if (arg === "--from") args.from = argv[(i += 1)];
     else if (arg === "--to") args.to = argv[(i += 1)];
-    else if (arg === "--summary") args.summary = argv[(i += 1)];
     else if (arg === "--out") args.out = argv[(i += 1)];
   }
   return args;
@@ -185,7 +181,7 @@ function main() {
     process.exit(1);
   }
 
-  const notes = renderNotes({ version, tag, previousTag, summary: args.summary, groups });
+  const notes = renderNotes({ tag, previousTag, groups });
 
   if (args.stdout) {
     process.stdout.write(notes);

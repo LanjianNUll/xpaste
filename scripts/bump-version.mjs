@@ -79,7 +79,7 @@ if (existsSync(noteFile)) {
   console.log(`✓ 更新日志文件已存在：${noteFile}（发版时会用它）`);
 } else {
   try {
-    // --summary 留空，初稿里会放一句占位提示，写完提交前记得替换成真正的版本重点
+    // 生成的初稿只含分组条目，提交前可按需补充版本重点说明
     execFileSync("node", ["scripts/gen-release-notes.mjs", "--version", version], { stdio: "inherit" });
   } catch {
     console.warn(`⚠ 没能自动生成 ${noteFile}，请手动补一份（否则发版时会按提交记录自动生成）`);
