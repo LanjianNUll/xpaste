@@ -8,14 +8,18 @@ edition = "2021"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# Tauri 相关 crate 统一钉在 2.12：不能用 "2" 通配。
+# CI 用 dtolnay/rust-toolchain@stable 装工具链，通配会让 Rust 侧漂到最新，
+# 而 npm侧的 @tauri-apps/api 由 lock 文件固定，两边一旦错位，
+# tauri build 会直接报 "Found version mismatched Tauri packages" 而中断发版。
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-global-shortcut = "2"
-tauri-plugin-shell = "2"
+tauri = { version = "2.12", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2.3"
+tauri-plugin-shell = "2.5"
 # 自动更新：检查更新、下载并校验签名、执行安装
-tauri-plugin-updater = "2"
+tauri-plugin-updater = "2.13"
 # 更新安装后重启应用
-tauri-plugin-process = "2"
+tauri-plugin-process = "2.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "macros"] }
@@ -41,4 +45,4 @@ codegen-units = 1
 panic = "abort"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-autostart = "2"
+tauri-plugin-autostart = "2.7"
