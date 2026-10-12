@@ -22,6 +22,7 @@ import {
   showUpdateDialog,
   updateState
 } from "@/services/update";
+import { defaultHotkey, modifierHint, hotkeyPlaceholder } from "@/services/platform";
 import HistoryManager from "@/components/HistoryManager.vue";
 import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
 import SettingsShell from "@/components/SettingsShell.vue";
@@ -34,7 +35,7 @@ const loading = ref(false);
 const selectedId = ref<number | null>(null);
 const activeDate = ref<DateRangeType>("today");
 const customDate = ref<Date>(new Date());
-const currentHotkey = ref("Win+V");
+const currentHotkey = ref(defaultHotkey);
 const showSettingsDialog = ref(false);
 const newHotkey = ref("");
 const autostart = ref(false);

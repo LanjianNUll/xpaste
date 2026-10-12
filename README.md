@@ -80,6 +80,8 @@
 - Node.js 16+ 
 - Rust 1.70+
 - pnpm (推荐) 或 npm
+- **macOS 额外需要**：Xcode Command Line Tools（`xcode-select --install`），
+  Rust 工具链通过 [rustup](https://rustup.rs/) 安装
 
 ### 安装依赖
 
@@ -106,6 +108,16 @@ pnpm tauri build
 ```
 
 构建完成后，可执行文件位于 `src-tauri/target/release/` 目录。
+
+macOS 下的产物在 `src-tauri/target/release/bundle/`：
+
+- `macos/Xpaste.app` —— 应用本体
+- `dmg/Xpaste_<版本>_aarch64.dmg` —— 安装镜像（`--bundles dmg` 单独打）
+
+```bash
+# 只打 .app（最快，用于本地验证）
+pnpm tauri build -- --bundles app
+```
 
 ### 发布新版本（自动）
 
@@ -147,17 +159,20 @@ git tag v2.0.8 && git push origin v2.0.8
 
 ### 快捷键
 
-- **Win+V** - 覆盖 Windows 原生剪贴板历史并唤起快捷窗口（可自定义）
-- **Ctrl+V** - 自动触发（由应用模拟）
+- **Win+V**（Windows）/ **Cmd+Shift+V**（macOS）- 唤起快捷窗口，可自定义
+- 唤起后点击任意记录即写入剪贴板，并自动模拟粘贴键（Windows 为 `Ctrl+V`，macOS 为 `⌘V`）
+
+macOS 上刻意**没有**沿用 Win+V：⌘V 是所有应用的粘贴键，全局抢占会破坏正常粘贴，
+所以默认改用 ⌘⇧V（Mac 剪贴板管理器的通行做法）。
 
 ### 自定义快捷键
 
 1. 打开主窗口
-2. 点击 "设置快捷键" 按钮
-3. 输入新快捷键（格式：Win+V, Ctrl+Shift+C 等）
-4. 重启应用生效
+2. 打开 "设置" → "通用"
+3. 输入新快捷键（格式：`Win+V`、`Cmd+Shift+V`、`Ctrl+Shift+C` 等）
+4. 保存后立即重新绑定，无需重启
 
-支持的修饰键：`Ctrl`, `Alt`, `Shift`, `Win`  
+支持的修饰键：`Ctrl` / `Command`(Cmd) / `Alt`(Option) / `Shift` / `Super` / `Win`
 支持的按键：`A-Z` 字母键
 
 ### 日期筛选

@@ -1,17 +1,22 @@
 #[cfg(target_os = "windows")]
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+#[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
     VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
+#[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL,
     WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
+#[cfg(target_os = "windows")]
 type HotkeyCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 
+#[cfg(target_os = "windows")]
 struct HookState {
     callback: Option<HotkeyCallback>,
     key_code: u32,
@@ -24,10 +29,13 @@ struct HookState {
 }
 
 // 使用 OnceLock 来存储全局状态
+#[cfg(target_os = "windows")]
 static HOOK_STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
+#[cfg(target_os = "windows")]
 static HOOK_HANDLE: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
 
 /// 发送无实际功能的虚拟键，避免 Win 组合键释放后弹出开始菜单。
+#[cfg(target_os = "windows")]
 fn mask_windows_key() {
     const VK_MASK: VIRTUAL_KEY = VIRTUAL_KEY(0x07);
     let inputs = [
@@ -57,6 +65,7 @@ fn mask_windows_key() {
     }
 }
 
+#[cfg(target_os = "windows")]
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
         let kb_struct = *(lparam.0 as *const KBDLLHOOKSTRUCT);
@@ -201,21 +210,6 @@ pub fn unregister_hotkey() {
             }
         }
     }
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn register_hotkey<F>(
-    _key_code: u32,
-    _ctrl: bool,
-    _alt: bool,
-    _shift: bool,
-    _win: bool,
-    _callback: F,
-) -> Result<(), String>
-where
-    F: Fn() + Send + Sync + 'static,
-{
-    Err("键盘钩子仅在 Windows 上支持".to_string())
 }
 
 #[cfg(not(target_os = "windows"))]

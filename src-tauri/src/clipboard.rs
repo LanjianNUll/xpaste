@@ -107,7 +107,11 @@ fn handle_captured(
         return;
     }
     *last_hash = Some(captured.hash);
-    log_line(&format!("clipboard: captured item hash={}", captured.hash));
+    // 内容没变时上面的判断会直接返回，所以这里不会随轮询频率刷屏。
+    log_line(&format!(
+        "clipboard: captured item hash={} format={} category={}",
+        captured.hash, captured.item.format, captured.item.category
+    ));
     let sdk = sdk.clone();
     let handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
@@ -203,11 +207,6 @@ fn build_file_capture(paths: Vec<String>) -> Option<CapturedItem> {
     // 多选时把每个路径各占一行，粘贴出来就是一组完整路径。
     let joined = normalized.join("\r\n");
     let hash = hash_text(&joined);
-    log_line(&format!(
-        "clipboard: file drop captured {} item(s), folder={}",
-        normalized.len(),
-        is_folder
-    ));
 
     let item = NewClipboardItem {
         format: "file".to_string(),
@@ -288,6 +287,20 @@ fn capture_clipboard() -> Option<CapturedItem> {
             created_at: now_ms(),
         };
         return Some(CapturedItem { item, hash });
+    }
+
+    // macOS 上从访达复制的文件/文件夹只写 public.file-url，不带纯文本表示，
+    // 所以放在最后兜底：既不影响文本/图片这些高频路径的性能，
+    // 又不会让"复制了一个文件"这件事在历史里彻底消失。
+    #[cfg(target_os = "macos")]
+    if let Ok(paths) = clipboard.get().file_list() {
+        let paths: Vec<String> = paths
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        if let Some(captured) = build_file_capture(paths) {
+            return Some(captured);
+        }
     }
 
     None
@@ -414,7 +427,7 @@ unsafe extern "system" fn window_proc(
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
-fn log_line(message: &str) {
+pub(crate) fn log_line(message: &str) {
     if let Some(path) = LOG_PATH.get() {
         let line = format!("{} {}\n", now_ms(), message);
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
