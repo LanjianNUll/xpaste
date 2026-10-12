@@ -276,6 +276,51 @@ pnpm tauri signer generate -w ~/.tauri/xpaste.key
    | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 生成密钥时设置的密码（没设密码就留空/不添加） |
 
 配置好之后，发版流程会自动多产出 `*.nsis.zip`、`*.sig` 与 `latest.json`。
+
+### macOS 构建
+
+发版流程（`.github/workflows/release.yml`）除了 Windows 版，**也会自动构建 macOS 的 dmg**，
+两个平台并行跑，产物挂在同一个 Release 里。不需要手动操作，推 tag 或推 main 即会触发。
+
+构建分为两个阶段，顺序是有意设计的：
+
+```
+version（校验版本号）
+   ├─ release（windows-latest）→ 装 NSIS 包 + 便携 zip ──┐
+   └─ release-macos（macos-latest）→ 装 dmg ─────────┤
+                                                        └─ publish（等两边都完，再把草稿转正）
+```
+
+`publish` 步骤用的是 `always()` 条件，因此**macOS 构建失败不会阻断 Windows 版发版**，
+只会在日志里留一条黄色警告。
+
+#### 关于 macOS 签名
+
+macOS 的签名状态分两种，流程会自动判断：
+
+| 仓库 Secret | 行为 |
+| --- | --- |
+| 只配 Tauri 更新签名（不配 Apple） | 用 **ad-hoc 签名**出 dmg。用户首次打开需在「系统设置 - 隐私与安全性」点「仍要打开」 |
+| 额外配 Apple 证书 | 正式开发者签名 + Apple 公证，并额外产出 `*.app.tar.gz` 自动更新包 |
+
+所以**没有 Apple 开发者账号也能出 dmg**，只是用户首次打开会看到 Gatekeeper 提示。
+
+如果需要零提示的完整体验，到 Apple Developer 后台创建 Developer ID 证书并导出
+`.p12`，然后在仓库 Settings → Secrets and variables → Actions 添加：
+
+| Secret 名 | 说明 |
+| --- | --- |
+| `APPLE_CERTIFICATE` | Developer ID Application 证书（`.p12` 文件内容） |
+| `APPLE_CERTIFICATE_PASSWORD` | 导出时设置的密码 |
+| `APPLE_SIGNING_IDENTITY` | 证书名，形如 `Developer ID Application: Your Name (TEAMID)` |
+| `APPLE_ID` | Apple ID |
+| `APPLE_PASSWORD` | App 专用密码（不是登录密码，在 Apple ID 网页端生成） |
+| `APPLE_TEAM_ID` | 团队 ID |
+
+配好后重新发版，dmg 会自动完成签名与公证。
+
+> macOS 自动更新（`latest.json` 里的 `darwin` 节点）只在配置了 Apple 签名时才会产出，
+> 未配置时 macOS 用户需要手动下载新版 dmg。
 如果这两项没配好，发版流程**不会失败**，只是跳过更新包并在运行摘要里给出警告
 （客户端收不到更新提示）。
 

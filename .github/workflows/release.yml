@@ -228,12 +228,158 @@ jobs:
           gh release upload "${{ needs.version.outputs.tag }}" `
             "Xpaste_v${{ needs.version.outputs.version }}_portable_win_x64.zip" --clobber
 
+  # ── 3. 收尾：等 macOS 也挂完产物后再把草稿转正 ─────────────────────
+  #
+  # 转正必须放在两个平台都上传完之后，否则 macOS 的 dmg 会挂到已发布的
+  # Release 上。这里用 always() 保证 macOS 失败时 Windows 版照样能发出去。
+  publish:
+    needs: [version, release, release-macos]
+    if: always() && needs.version.outputs.should_release == 'true' && needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 汇总构建结果
+        id: summary
+        shell: bash
+        run: |
+          macos_state="${{ needs.release-macos.result }}"
+          echo "windows=success" >> "$GITHUB_OUTPUT"
+          echo "macos=$macos_state" >> "$GITHUB_OUTPUT"
+          if [ "$macos_state" = "skipped" ]; then
+            echo "本次未构建 macOS 产物"
+          elif [ "$macos_state" = "failure" ]; then
+            echo "::warning title=macOS 构建失败::Windows 版正常发布，但没有 dmg。请到 Actions 日志查看原因，常见情况是 Apple 签名或公证未配置。"
+          fi
+
       - name: 正式发布
-        shell: pwsh
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
-          $tag = "${{ needs.version.outputs.tag }}"
-          $id = gh release view $tag --json id -q .id
-          gh api -X PATCH "repos/${{ github.repository }}/releases/$id" -F draft=false | Out-Null
-          Write-Host "已发布：$(gh release view $tag --json url -q .url)"
+          # 注意：草稿 Release 还没有关联 tag，releases/tags/$TAG 查不到，
+          # 只能从列表里按 tag_name 匹配本次版本创建的草稿。
+          id=$(gh api --paginate "repos/${{ github.repository }}/releases" \
+            --jq ".[] | select(.draft == true and .tag_name == \"$TAG\") | .id" | head -1)
+          if [ -z "$id" ]; then
+            echo "::error::找不到 tag 为 $TAG 的草稿 Release"
+            exit 1
+          fi
+          gh api -X PATCH "repos/${{ github.repository }}/releases/$id" -F draft=false > /dev/null
+          echo "已发布：$(gh release view "$TAG" --json url -q .url)"
+
+  # ── 3. 构建 macOS dmg ──────────────────────────────────────────────
+  #
+  # 与 Windows job 并行：两边都往同一个草稿 Release 上挂产物，
+  # 谁先建草稿都行，后到的直接追加资源（tauri-action 会复用已存在的 Release）。
+  # macOS 没有免安装的便携版概念，这里只出dmg 与 .app.tar.gz 自动更新包。
+  release-macos:
+    needs: version
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # 架构跟随 runner：macos-14是 Apple Silicon，macos-13 是 Intel。
+      # 写死aarch64 会在 Intel runner 上找不到解释器而失败。
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.arch == 'ARM64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
+
+      - name: Rust 构建缓存
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: macos
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      # 更新日志沿用同一份内容：优先 release-notes/<版本>.md，否则按提交记录生成。
+      # 这里不负责发布 Release，只取文本供 tauri-action 复用。
+      - name: 准备更新日志
+        id: notes
+        shell: bash
+        run: |
+          version="${{ needs.version.outputs.version }}"
+          noteFile="release-notes/$version.md"
+          if [ -f "$noteFile" ]; then
+            body=$(cat "$noteFile")
+            echo "使用 $noteFile 作为更新日志"
+          else
+            body=$(node scripts/gen-release-notes.mjs --version "$version" --to HEAD --stdout)
+            if [ $? -ne 0 ]; then
+              echo "::error::自动生成更新日志失败（$noteFile 不存在，且无法按提交记录生成）"
+              exit 1
+            fi
+            echo "没有找到 $noteFile，已按提交记录自动生成更新日志"
+          fi
+          {
+            echo "body<<__NOTES_EOF__"
+            echo "$body"
+            echo "__NOTES_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
+      # macOS 未配置签名时也要能出包：没有公证凭据则只出 dmg 并警告。
+      # 一旦配置了 APPLE_CERTIFICATE 等Secret，就同时产出自动更新包并做公证。
+      - name: 检查 macOS 签名与公证配置
+        id: signing
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          args=(--bundles dmg)
+          updater=false
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            # 有开发者证书：正式签名 +公证，同时产出自动更新包
+            echo "Apple签名配置就绪，将签名、公证并生成 .app.tar.gz 自动更新包"
+            args+=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
+            updater=true
+          else
+            # 没有证书：用 ad-hoc 签名保证 dmg 能直接打开，代价是用户需手动放行 Gatekeeper
+            echo "::warning::未配置 Apple 开发者签名（APPLE_CERTIFICATE / APPLE_SIGNING_IDENTITY），本次使用 ad-hoc 签名。用户首次打开需在 系统设置 - 隐私与安全性 中点仍要打开，配置方法见 README 的 macOS 构建一节。"
+            args+=(--config '{"bundle":{"macOS":{"signingIdentity":"-"}}}')
+          fi
+          echo "args=${args[*]}" >> "$GITHUB_OUTPUT"
+          echo "updater=$updater" >> "$GITHUB_OUTPUT"
+
+      - name: 构建并上传 dmg（草稿）
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # 公证用；未配置时上面的判断已保证不会走到需要它们的分支
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ needs.version.outputs.tag }}
+          releaseName: "Xpaste v${{ needs.version.outputs.version }}"
+          releaseBody: ${{ steps.notes.outputs.body }}
+          # Windows job 会把草稿转正，这里只负责追加产物，不要碰发布状态
+          releaseDraft: true
+          prerelease: false
+          args: ${{ steps.signing.outputs.args }}
+          includeUpdaterJson: ${{ steps.signing.outputs.updater == 'true' }}
