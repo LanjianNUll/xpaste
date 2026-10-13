@@ -11,7 +11,9 @@ import {
   subscribeClipboardUpdates,
   subscribePopupShown
 } from "@/services/api";
+import { closeImageViewer, imageViewerVisible, openImageViewer } from "@/services/imageViewer";
 import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
+import ImageViewer from "@/components/ImageViewer.vue";
 import AmbientLayer from "@/components/AmbientLayer.vue";
 
 const items = ref<ClipboardItem[]>([]);
@@ -121,65 +123,19 @@ function selectDate(value: DateRangeType) {
   loadHistory();
 }
 
-// 图片放大预览：快捷窗口只有 360x500，因此支持滚轮缩放与拖拽平移。
-const previewVisible = ref(false);
-const previewUrl = ref("");
-const previewBodyRef = ref<HTMLElement | null>(null);
-const zoom = ref(1);
-const MIN_ZOOM = 1;
-const MAX_ZOOM = 8;
-let panState: { x: number; y: number; left: number; top: number } | null = null;
-
-const previewImageStyle = computed(() =>
-  zoom.value === MIN_ZOOM
-    ? { width: "auto", maxWidth: "100%", maxHeight: "100%" }
-    : { width: `${zoom.value * 100}%`, maxWidth: "none", maxHeight: "none" }
-);
-
+// 图片预览统一走全局组件 ImageViewer，这里只负责按需读取原图并打开
+/** 打开全局全屏预览：与主界面、历史管理共用同一个组件 */
 async function openImagePreview(item: ClipboardItem) {
   try {
-    const data = await getClipboardImage(item.id);
-    previewUrl.value = `data:image/png;base64,${data}`;
-    zoom.value = MIN_ZOOM;
-    previewVisible.value = true;
+    const data = await getClipboardImage(item.id, true);
+    if (!data) {
+      ElMessage.warning("图片已失效或读取失败");
+      return;
+    }
+    openImageViewer(`data:image/png;base64,${data}`, `剪贴板图片_${formatTime(item.createdAt).replace(":", "")}`);
   } catch {
     ElMessage.error("加载图片失败");
   }
-}
-
-function closeImagePreview() {
-  previewVisible.value = false;
-  previewUrl.value = "";
-  zoom.value = MIN_ZOOM;
-  panState = null;
-}
-
-function handlePreviewWheel(event: WheelEvent) {
-  event.preventDefault();
-  const factor = event.deltaY < 0 ? 1.25 : 1 / 1.25;
-  zoom.value = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number((zoom.value * factor).toFixed(3))));
-}
-
-function startPan(event: PointerEvent) {
-  const body = previewBodyRef.value;
-  if (!body || zoom.value === MIN_ZOOM) return;
-  panState = { x: event.clientX, y: event.clientY, left: body.scrollLeft, top: body.scrollTop };
-  body.setPointerCapture(event.pointerId);
-}
-
-function movePan(event: PointerEvent) {
-  const body = previewBodyRef.value;
-  if (!body || !panState) return;
-  body.scrollLeft = panState.left - (event.clientX - panState.x);
-  body.scrollTop = panState.top - (event.clientY - panState.y);
-}
-
-function endPan() {
-  panState = null;
-}
-
-function resetZoom() {
-  zoom.value = MIN_ZOOM;
 }
 
 function getDateRange(type: DateRangeType): DateRange {
@@ -331,7 +287,7 @@ function itemTypeLabel(item: ClipboardItem) {
 }
 
 function handleWindowBlur() {
-  closeImagePreview();
+  closeImageViewer();
   hidePopup().catch(() => undefined);
 }
 
@@ -410,7 +366,7 @@ async function handlePopupShown() {
   historyExpanded.value = false;
   // 每次弹出都回到收起状态，保证列表拿到最大可视高度
   closeFilterPanel();
-  closeImagePreview();
+  closeImageViewer();
   await loadHistory();
   if (popupBodyRef.value) {
     popupBodyRef.value.scrollTop = 0;
@@ -460,8 +416,8 @@ function handleKeydown(event: KeyboardEvent) {
   if (key === "Escape") {
     event.preventDefault();
     // 优先级：图片预览 → 筛选面板 → 展开的历史搜索 → 隐藏快捷窗口。
-    if (previewVisible.value) {
-      closeImagePreview();
+    if (imageViewerVisible.value) {
+      closeImageViewer();
       return;
     }
     if (filterExpanded.value) {
@@ -477,7 +433,7 @@ function handleKeydown(event: KeyboardEvent) {
   }
 
   // 图片放大预览时，方向键/回车交给预览层处理。
-  if (previewVisible.value) return;
+  if (imageViewerVisible.value) return;
 
   if (isComposing) return;
 
@@ -722,35 +678,8 @@ watch(customDate, () => {
       <span class="footer-hint">↑↓ 选择 · Enter 粘贴 · Esc 关闭</span>
     </div>
 
-    <div v-if="previewVisible" class="image-preview-overlay">
-      <div class="image-preview-header">
-        <span>图片预览</span>
-        <button type="button" class="image-preview-close" @click="closeImagePreview">✕</button>
-      </div>
-      <div
-        ref="previewBodyRef"
-        class="image-preview-body"
-        :class="{ pannable: zoom > MIN_ZOOM }"
-        @wheel="handlePreviewWheel"
-        @pointerdown="startPan"
-        @pointermove="movePan"
-        @pointerup="endPan"
-        @pointercancel="endPan"
-      >
-        <img
-          :src="previewUrl"
-          :style="previewImageStyle"
-          class="image-preview-full"
-          alt="放大预览"
-          draggable="false"
-          @dblclick="resetZoom"
-        />
-      </div>
-      <div class="image-preview-footer">
-        <span>滚轮缩放 · 拖拽平移 · 双击还原</span>
-        <span>{{ Math.round(zoom * 100) }}%</span>
-      </div>
-    </div>
+    <!-- 全局图片预览器：与主界面、历史管理共用 -->
+    <ImageViewer />
   </div>
 </template>
 
@@ -1102,65 +1031,5 @@ padding: 1px 6px;
 
 .footer-hint {
   flex-shrink: 0;
-}
-
-.image-preview-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 2000;
-  display: flex;
-  flex-direction: column;
-  background: #1f1f1f;
-}
-
-.image-preview-header,
-.image-preview-footer {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 10px;
-  font-size: 12px;
-  color: #dcdcdc;
-  background: #2d2d2d;
-}
-
-.image-preview-close {
-  border: none;
-  background: transparent;
-  color: #dcdcdc;
-  font-size: 14px;
-  line-height: 1;
-  padding: 2px 6px;
-  cursor: pointer;
-}
-
-.image-preview-close:hover {
-  color: #ffffff;
-  background: #3f3f3f;
-}
-
-.image-preview-body {
-  flex: 1;
-  display: flex;
-  overflow: auto;
-  min-height: 0;
-}
-
-.image-preview-body.pannable {
-  cursor: grab;
-}
-
-.image-preview-body.pannable:active {
-  cursor: grabbing;
-}
-
-.image-preview-full {
-  flex: none;
-  margin: auto;
-  display: block;
-  user-select: none;
-  background: var(--image-bg);
 }
 </style>

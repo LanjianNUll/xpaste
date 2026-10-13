@@ -15,7 +15,9 @@ import {
   getCategoryStats,
   getClipboardImage
 } from "@/services/api";
+import { openImageViewer } from "@/services/imageViewer";
 import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
+import ImageViewer from "@/components/ImageViewer.vue";
 
 const filters = ref({
   dateRange: "today" as DateRangeType,
@@ -35,8 +37,6 @@ const categoryStats = ref<Array<[string, number]>>([]);
 const debounceHandle = ref<number | null>(null);
 
 // 图片预览
-const imagePreviewVisible = ref(false);
-const imagePreviewUrl = ref("");
 
 const formatLabel: Record<string, string> = {
   text: "文本",
@@ -201,18 +201,18 @@ function filePreview(item: ClipboardItem) {
   return `${paths[0]} 等 ${paths.length} 个路径`;
 }
 
+/** 打开全局全屏预览：与主界面、快捷窗口共用同一个组件 */
 async function openImagePreview(item: ClipboardItem) {
   try {
-    const data = await getClipboardImage(item.id);
-    imagePreviewUrl.value = `data:image/png;base64,${data}`;
-    imagePreviewVisible.value = true;
+    const data = await getClipboardImage(item.id, true);
+    if (!data) {
+      ElMessage.warning("图片已失效或读取失败");
+      return;
+    }
+    openImageViewer(`data:image/png;base64,${data}`, `剪贴板图片_${formatTime(item.createdAt).replace(":", "")}`);
   } catch {
     ElMessage.error("加载图片失败");
   }
-}
-
-function releaseImagePreview() {
-  imagePreviewUrl.value = "";
 }
 
 async function openLink(item: ClipboardItem) {
@@ -551,25 +551,15 @@ watch(() => filters.value.customDateRange, () => {
       />
     </el-config-provider>
 
-    <!-- 图片预览对话框 -->
-    <el-dialog
-      v-model="imagePreviewVisible"
-      @closed="releaseImagePreview"
-      title="图片预览"
-      width="80%"
-      top="5vh"
-      class="image-preview-dialog"
-    >
-      <div class="image-preview-container">
-        <img :src="imagePreviewUrl" alt="预览" class="preview-full-image" />
-      </div>
-    </el-dialog>
+    <!-- 全局图片预览器：与主界面、快捷窗口共用 -->
+    <ImageViewer />
   </div>
 </template>
 
 <style scoped>
+/* 外层 .main-content 已负责留白，这里不再重复加内边距，避免双重留白 */
 .history-manager {
-  padding: 12px;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -714,28 +704,5 @@ watch(() => filters.value.customDateRange, () => {
 
 :deep(.el-card__body) {
   padding: 12px;
-}
-
-.image-preview-container {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  min-height: 400px;
-  background: var(--panel-alt);
-  border: 1px solid var(--stroke);
-  border-radius: var(--radius-lg);
-}
-
-.preview-full-image {
-  max-width: 100%;
-  max-height: 80vh;
-  object-fit: contain;
-  border-radius: var(--radius-md);
-}
-
-:deep(.image-preview-dialog) {
-  .el-dialog__body {
-    padding: 20px;
-  }
 }
 </style>

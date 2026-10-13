@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
-import { Check, Moon, Monitor, Sunny } from "@element-plus/icons-vue";
+import { Check } from "@element-plus/icons-vue";
 import {
   AMBIENT_DENSITY_OPTIONS,
-  AMBIENT_EFFECT_LABEL,
   AMBIENT_EFFECT_OPTIONS,
   BACKDROP_STYLE_OPTIONS,
   BUILTIN_SKINS,
@@ -67,10 +66,10 @@ const presetColors = [
   "#0078d4", "#547bb0", "#7c5cd6", "#ec4899", "#6d6875", "#2b2d42"
 ];
 
-const modeOptions: Array<{ value: ThemeMode; label: string; icon: unknown }> = [
-  { value: "light", label: "浅色", icon: Sunny },
-  { value: "dark", label: "深色", icon: Moon },
-  { value: "system", label: "跟随系统", icon: Monitor }
+const modeOptions: Array<{ value: ThemeMode; label: string }> = [
+  { value: "light", label: "浅色" },
+  { value: "dark", label: "深色" },
+  { value: "system", label: "跟随系统" }
 ];
 
 function reloadState() {
@@ -96,6 +95,22 @@ function applyState(state: ThemeState) {
 }
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+/**
+ * 浅色 / 深色两张卡片的缩略图用纯色块表示，而不是风景缩略图——
+ * 这两张卡的本质是"无背景的主题底色"，画风景反而会误导。
+ * 色块上再叠一层示意用的界面元素，让人一眼看出浅色是白底、深色是黑底。
+ */
+function modeSwatchStyle(value: ThemeMode) {
+  if (value === "dark") {
+    return { background: "linear-gradient(160deg, #2f2f2f, #171717)" };
+  }
+  if (value === "system") {
+    // 跟随系统：左半浅右半深，视觉上直接表达"跟随"的意思
+    return { background: "linear-gradient(105deg, #f6f6f6 0 48%, #2b2b2b 52% 100%)" };
+  }
+  return { background: "linear-gradient(160deg, #ffffff, #f0f0f0)" };
+}
 
 /**
  * 皮肤卡片色样：直接复用窗口背景的生成结果（services/scenery.ts），
@@ -291,30 +306,92 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="theme-settings">
-    <!-- 顶部一组行式设置：模式 / 动效 / 画法，控件右对齐 -->
-    <div class="settings-group">
-      <div class="settings-row">
-        <div class="settings-row-main">
-          <div class="settings-row-label">主题模式</div>
-          <div class="settings-row-desc">浅色、深色或跟随系统，所有窗口即时同步</div>
-        </div>
-        <div class="settings-row-control">
-          <div class="settings-segmented">
-            <button
-              v-for="option in modeOptions"
-              :key="option.value"
-              type="button"
-              class="settings-segment"
-              :class="{ 'is-active': mode === option.value }"
-              @click="handleSelectMode(option.value)"
-            >
-              <el-icon :size="13"><component :is="option.icon" /></el-icon>
-              <span>{{ option.label }}</span>
-            </button>
-          </div>
-        </div>
+    <!-- 全部主题：深浅色模式与皮肤合在一个网格里，所见即所得 -->
+    <section class="settings-block">
+      <div class="settings-block-header">
+        <span class="settings-block-title">全部主题</span>
+        <span class="settings-block-hint">缩略图即为窗口实际背景，点击即时切换</span>
       </div>
 
+      <div class="theme-gallery">
+        <!-- 深浅色模式：纯色块示意，不画风景 -->
+        <button
+          v-for="option in modeOptions"
+          :key="option.value"
+          type="button"
+          class="theme-card"
+          :class="{ 'is-active': mode === option.value }"
+          :title="option.label"
+          @click="handleSelectMode(option.value)"
+        >
+          <span class="theme-thumb" :style="modeSwatchStyle(option.value)">
+            <!-- 色块上叠一层示意界面，让浅色/深色的对比一眼可辨 -->
+            <span
+              class="theme-mock"
+              :class="option.value === 'dark' ? 'is-dark' : option.value === 'system' ? 'is-auto' : 'is-light'"
+            >
+              <i class="mock-bar"></i>
+              <i class="mock-line"></i>
+              <i class="mock-line is-short"></i>
+            </span>
+            <span v-if="mode === option.value" class="theme-check">
+              <el-icon :size="12"><Check /></el-icon>
+            </span>
+          </span>
+          <span class="theme-name">{{ option.label }}</span>
+        </button>
+
+        <!-- 内置皮肤：缩略图复用窗口真实背景 -->
+        <button
+          v-for="skin in BUILTIN_SKINS"
+          :key="skin.id"
+          type="button"
+          class="theme-card"
+          :class="{ 'is-active': skinId === skin.id }"
+          :title="skin.description"
+          @click="handleSelectSkin(skin.id)"
+        >
+          <span class="theme-thumb" :style="sceneryStyle(skin.id)">
+            <span v-if="skinId === skin.id" class="theme-check">
+              <el-icon :size="12"><Check /></el-icon>
+            </span>
+          </span>
+          <span class="theme-name">{{ skin.name }}</span>
+        </button>
+
+        <!-- 已保存的自定义皮肤 -->
+        <button
+          v-if="customCardInfo && !editorVisible"
+          type="button"
+          class="theme-card"
+          :class="{ 'is-active': skinId === 'custom' }"
+          title="自定义皮肤"
+          @click="handleSelectSkin('custom')"
+        >
+          <span class="theme-thumb" :style="sceneryStyle('custom')">
+            <span v-if="skinId === 'custom'" class="theme-check">
+              <el-icon :size="12"><Check /></el-icon>
+            </span>
+          </span>
+          <span class="theme-name">{{ customCardInfo.name }}</span>
+        </button>
+
+        <!-- 新建自定义皮肤 -->
+        <button
+          v-if="!editorVisible"
+          type="button"
+          class="theme-card theme-card-create"
+          title="创建自定义皮肤"
+          @click="openEditor"
+        >
+          <span class="theme-thumb theme-thumb-create">＋</span>
+          <span class="theme-name">自定义</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- 动效与画法：行式设置，控件右对齐 -->
+    <div class="settings-group">
       <div class="settings-row">
         <div class="settings-row-main">
           <div class="settings-row-label">背景画法</div>
@@ -373,64 +450,6 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
-
-    <!-- 皮肤：宫格缩略图，本身就是选择器，不再包卡片 -->
-    <section class="settings-block">
-      <div class="settings-block-header">
-        <span class="settings-block-title">皮肤</span>
-        <span class="settings-block-hint">每套皮肤自带专属背景风景与背景动效</span>
-      </div>
-      <div class="skin-grid">
-        <button
-          v-for="skin in BUILTIN_SKINS"
-          :key="skin.id"
-          type="button"
-          class="skin-card"
-          :class="{ 'is-active': skinId === skin.id }"
-          :title="skin.description"
-          @click="handleSelectSkin(skin.id)"
-        >
-          <span class="skin-swatch" :style="sceneryStyle(skin.id)">
-            <span class="skin-swatch-tint" :style="{ background: skin.primary }"></span>
-            <el-icon v-if="skinId === skin.id" class="skin-check" :size="12">
-              <Check />
-            </el-icon>
-          </span>
-          <span class="skin-name">{{ skin.name }}</span>
-          <span class="skin-effect">{{ AMBIENT_EFFECT_LABEL[skin.effect] }}</span>
-        </button>
-
-        <button
-          v-if="customCardInfo && !editorVisible"
-          type="button"
-          class="skin-card"
-          :class="{ 'is-active': skinId === 'custom' }"
-          title="自定义皮肤"
-          @click="handleSelectSkin('custom')"
-        >
-          <span class="skin-swatch" :style="sceneryStyle('custom')">
-            <span class="skin-swatch-tint" :style="{ background: customCardInfo.primary }"></span>
-            <el-icon v-if="skinId === 'custom'" class="skin-check" :size="12">
-              <Check />
-            </el-icon>
-          </span>
-          <span class="skin-name">{{ customCardInfo.name }}</span>
-          <span class="skin-effect">自定义</span>
-        </button>
-
-        <button
-          v-if="!editorVisible"
-          type="button"
-          class="skin-card skin-card-create"
-          title="创建自定义皮肤"
-          @click="openEditor"
-        >
-          <span class="skin-swatch skin-swatch-create">＋</span>
-          <span class="skin-name">自定义</span>
-          <span class="skin-effect">打造专属</span>
-        </button>
-      </div>
-    </section>
 
     <!-- 自定义皮肤编辑器（高级）：展开时以嵌入面板呈现 -->
     <section v-if="editorVisible" class="custom-editor">
@@ -493,9 +512,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="custom-editor-preview">
-        <span class="skin-swatch preview-swatch" :style="draftSceneryStyle()">
-          <span class="skin-swatch-tint" :style="{ background: draft.primary }"></span>
-        </span>
+        <span class="editor-preview-thumb" :style="draftSceneryStyle()"></span>
         <span class="ts-hint">
           {{ draft.backgroundImage
             ? "背景图会铺满窗口，并自动叠加一层薄雾保证文字清晰"
@@ -534,80 +551,70 @@ onBeforeUnmount(() => {
   color: var(--muted);
 }
 
-/* 皮肤宫格：缩略图占卡片主体，选中态用主色描边 + 轻微内发光 */
-.skin-grid {
+/*
+ * 全部主题网格：宽幅横向缩略图（16:9），名称在图下方居中。
+ * 用 auto-fill + minmax 而不是固定列数：设置面板宽度随窗口变化，
+ * 让卡片始终保持接近 16:9 的比例，不会出现"一行挤 5 张、下一行只放 2 张"的空档。
+ */
+.theme-gallery {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: 14px 12px;
 }
 
-.skin-card {
+.theme-card {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 6px;
-  border: 1px solid var(--stroke);
-  border-radius: var(--radius-lg);
-  background: var(--card-bg);
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  border: none;
+  background: transparent;
   cursor: pointer;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
 }
 
-.skin-card:hover {
-  border-color: var(--stroke-strong);
-  box-shadow: var(--shadow-soft);
+.theme-thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  /* 缩略图用的是与窗口背景同一套图层，按 cover 铺满 */
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease, transform 0.14s ease;
 }
 
-.skin-card.is-active {
+.theme-card:hover .theme-thumb {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card);
+}
+
+.theme-card.is-active .theme-thumb {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--selection-border);
 }
 
-.skin-swatch {
-  position: relative;
-  height: 46px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--stroke);
-  overflow: hidden;
-  /* 卡片预览用的是与窗口背景同一套渐变图层，缩略图按 cover 铺满 */
-  background-size: cover;
-  background-position: center bottom;
-  background-repeat: no-repeat;
-}
-
-/* 卡片底部的主色条：背景之外还能一眼看到这套皮肤的主色 */
-.skin-swatch-tint {
+/* 选中角标：贴在缩略图右上角，用主色实心圆点，一眼可辨当前选中项 */
+.theme-check {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 4px;
-}
-
-.skin-check {
-  position: absolute;
-  right: 5px;
-  top: 5px;
-  background: var(--accent);
-  border-radius: 50%;
-  padding: 2px;
-  color: var(--accent-contrast);
-}
-
-.skin-swatch-create {
+  top: 6px;
+  right: 6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--card-inset);
-  color: var(--muted);
-  font-size: 18px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
 }
 
-.skin-card-create {
-  border-style: dashed;
-}
-
-.skin-name {
+.theme-name {
+  max-width: 100%;
   font-size: 12px;
   color: var(--text);
   text-align: center;
@@ -616,13 +623,71 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
 }
 
-.skin-effect {
-  font-size: 10px;
+.theme-card.is-active .theme-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/*
+ * 浅色 / 深色 / 跟随系统三张卡片：色块上叠一层示意界面元素
+ * （顶栏 + 两行文字），比纯色块更能让用户预判切换后的真实观感。
+ */
+.theme-mock {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 8px;
+  bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border-radius: var(--radius-xs);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.theme-mock.is-light {
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.theme-mock.is-dark {
+  background: rgba(43, 43, 43, 0.96);
+}
+
+.mock-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(120, 120, 128, 0.45);
+}
+
+.mock-line {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(120, 120, 128, 0.28);
+}
+
+.mock-line.is-short {
+  width: 62%;
+}
+
+/* 跟随系统：色块本身已是一半浅一半深，无需再叠示意界面 */
+.theme-mock.is-auto {
+  display: none;
+}
+
+.theme-thumb-create {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--card-inset);
+  border-style: dashed;
   color: var(--muted);
-  text-align: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 20px;
+}
+
+.theme-card-create:hover .theme-thumb {
+  border-color: var(--stroke-strong);
+  color: var(--text);
 }
 
 .custom-editor {
@@ -701,10 +766,16 @@ onBeforeUnmount(() => {
   margin-bottom: 12px;
 }
 
-.preview-swatch {
-  width: 110px;
-  height: 40px;
+/* 编辑器里的实时预览缩略图：与网格卡片同样的取景方式，所见即所得 */
+.editor-preview-thumb {
+  width: 120px;
+  aspect-ratio: 16 / 9;
   flex-shrink: 0;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 
 .custom-editor-actions {

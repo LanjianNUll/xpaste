@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import { ElMessage } from "element-plus";
-import { Moon, Setting, Sunny } from "@element-plus/icons-vue";
-import hljs from "highlight.js/lib/common";
+import { Calendar, DocumentCopy, Moon, Setting, Sunny } from "@element-plus/icons-vue";
 import type { ClipboardItem, DateRangeType, DateRange } from "@/types";
 import {
   fetchHistoryByDate,
+  getClipboardImage,
   setClipboard,
   getHotkey,
   setHotkey,
@@ -15,6 +15,7 @@ import {
   subscribeClipboardUpdates
 } from "@/services/api";
 import { setThemeMode } from "@/services/theme";
+import { openImageViewer } from "@/services/imageViewer";
 import {
   checkForUpdate,
   initAutoUpdate,
@@ -25,6 +26,7 @@ import {
 import { defaultHotkey, isMacOS } from "@/services/platform";
 import HistoryManager from "@/components/HistoryManager.vue";
 import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
+import ImageViewer from "@/components/ImageViewer.vue";
 import SettingsShell from "@/components/SettingsShell.vue";
 import AmbientLayer from "@/components/AmbientLayer.vue";
 import TitleBarControls from "@/components/TitleBarControls.vue";
@@ -37,19 +39,22 @@ const selectedId = ref<number | null>(null);
 const activeDate = ref<DateRangeType>("today");
 const customDate = ref<Date>(new Date());
 const currentHotkey = ref(defaultHotkey);
-const showSettingsDialog = ref(false);
 const newHotkey = ref("");
 const autostart = ref(false);
 const activeTab = ref("clipboard");
 
 /**
- * 顶部主导航：与"历史管理"同级的后续功能模块，在这里加一项，
- * 再在模板里补一个对应的 v-else-if 内容分支即可。
+ * 左侧主导航：固定三项，不再随功能增减而变动。
+ * 后续要加模块时在这里补一项，再在模板里加对应的 v-else-if 内容分支。
  */
-const mainTabs: Array<{ id: string; label: string }> = [
-  { id: "clipboard", label: "剪贴板" },
-  { id: "history", label: "历史管理" }
+const mainTabs: Array<{ id: string; label: string; icon: unknown }> = [
+  { id: "clipboard", label: "剪贴板", icon: DocumentCopy },
+  { id: "history", label: "历史管理", icon: Calendar },
+  { id: "settings", label: "设置", icon: Setting }
 ];
+
+/** 侧边栏选中项对应的右侧标题 */
+const activeTabLabel = computed(() => mainTabs.find((tab) => tab.id === activeTab.value)?.label ?? "");
 
 // 当前生效的深浅色（含"跟随系统"解析后的结果）。
 // 通过监听 html 的 data-theme 属性变化感知所有来源的切换：
@@ -166,6 +171,23 @@ function handleDateChange() {
   loadHistory();
 }
 
+/**
+ * 点击历史记录里的图片缩略图：打开全局全屏预览。
+ * 缩略图本身是懒加载的，这里按需再读一次原始 Base64，避免拿到的是压缩过的缩略图。
+ */
+async function handleImageClick(item: ClipboardItem) {
+  try {
+    const data = await getClipboardImage(item.id, true);
+    if (!data) {
+      ElMessage.warning("图片已失效或读取失败。");
+      return;
+    }
+    openImageViewer(`data:image/png;base64,${data}`, `剪贴板图片_${formatTime(item.createdAt).replace(":", "")}`);
+  } catch (err) {
+    ElMessage.error("读取图片失败。");
+  }
+}
+
 function formatTime(ts: number) {
   const date = new Date(ts);
   return `${date.getHours().toString().padStart(2, "0")}:${date
@@ -188,15 +210,6 @@ function highlightText(text: string, keyword: string) {
   if (!keyword.trim()) return safe;
   const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return safe.replace(new RegExp(escaped, "gi"), (match) => `<mark>${match}</mark>`);
-}
-
-function isCodeLike(text: string) {
-  if (text.length < 40) return false;
-  return /[;{}<>]|\b(function|const|let|var|class|def|fn|impl|use|import)\b/i.test(text);
-}
-
-function codeHtml(text: string) {
-  return hljs.highlightAuto(text).value;
 }
 
 function shortPreview(item: ClipboardItem) {
@@ -248,10 +261,16 @@ async function clearData() {
   }
 }
 
-async function openSettingsDialog() {
-  newHotkey.value = currentHotkey.value;
-  autostart.value = await isAutostartEnabled();
-  showSettingsDialog.value = true;
+/**
+ * 切换左侧导航：切到设置页时额外读一份外部状态，
+ * 保证快捷键输入框与开机启动开关显示的是实际生效值。
+ */
+async function selectTab(id: string) {
+  if (id === "settings") {
+    newHotkey.value = currentHotkey.value;
+    autostart.value = await isAutostartEnabled();
+  }
+  activeTab.value = id;
 }
 
 /**
@@ -406,35 +425,67 @@ watch(customDate, () => {
   <div class="app-shell">
     <AmbientLayer />
     <UpdateDialog />
-    <!-- 窗口无系统边框（decorations:false），这条工具栏同时充当标题栏：
-         整条透明可拖动，窗口控制按钮按平台渲染（macOS 左上红绿灯 / Windows 右上角） -->
-    <header class="toolbar" :class="isMacOS ? 'toolbar--macos' : 'toolbar--windows'" data-tauri-drag-region>
-      <TitleBarControls v-if="isMacOS" />
-      <el-tabs v-model="activeTab" class="main-tabs">
-        <el-tab-pane v-for="tab in mainTabs" :key="tab.id" :label="tab.label" :name="tab.id" />
-      </el-tabs>
-      <!-- 中间的空白拖拽区：窗口靠它拖动，双击可最大化 -->
-      <div class="toolbar-drag" data-tauri-drag-region></div>
-      <div class="toolbar-actions">
-        <button
-          type="button"
-          class="toolbar-icon-btn"
-          :title="resolvedDark ? '切换到浅色模式' : '切换到深色模式'"
-          @click="toggleTheme"
-        >
-          <el-icon :size="16">
-            <Sunny v-if="resolvedDark" />
-            <Moon v-else />
-          </el-icon>
-        </button>
-        <button type="button" class="toolbar-icon-btn" title="设置" @click="openSettingsDialog">
-          <el-icon :size="16"><Setting /></el-icon>
-        </button>
-      </div>
-      <TitleBarControls v-if="!isMacOS" />
-    </header>
+    <ImageViewer />
 
-    <main class="content-area">
+    <!-- 左侧固定侧边栏：品牌区 + 主导航 + 底部用户区 -->
+    <aside class="sidebar">
+      <!-- 品牌区同时充当标题栏拖拽区；macOS 红绿灯必须在这里才贴近原生位置 -->
+      <div class="sidebar-brand" data-tauri-drag-region>
+        <TitleBarControls v-if="isMacOS" />
+        <span class="brand-logo" aria-hidden="true">X</span>
+        <span class="brand-name">Xpaste</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <button
+          v-for="tab in mainTabs"
+          :key="tab.id"
+          type="button"
+          class="sidebar-item"
+          :class="{ 'is-active': activeTab === tab.id }"
+          :title="tab.label"
+          @click="selectTab(tab.id)"
+        >
+          <el-icon :size="16"><component :is="tab.icon" /></el-icon>
+          <span class="sidebar-item-label">{{ tab.label }}</span>
+        </button>
+      </nav>
+
+      <!-- 底部用户区：登录/账户入口的预留位，功能上线前只占位不渲染内容 -->
+      <div class="sidebar-footer">
+        <div class="user-slot" title="用户中心即将上线" aria-hidden="true">
+          <span class="user-avatar"></span>
+          <span class="user-text">
+            <i class="user-name">未登录</i>
+            <i class="user-sub">即将上线</i>
+          </span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 右侧主列：标题栏 + 内容区 -->
+    <div class="main-column">
+      <header class="main-header" data-tauri-drag-region>
+        <h1 class="page-title">{{ activeTabLabel }}</h1>
+        <!-- 标题栏中部的空白拖拽区：窗口主要靠它拖动，双击可最大化 -->
+        <div class="header-drag" data-tauri-drag-region></div>
+        <div class="header-actions">
+          <button
+            type="button"
+            class="toolbar-icon-btn"
+            :title="resolvedDark ? '切换到浅色模式' : '切换到深色模式'"
+            @click="toggleTheme"
+          >
+            <el-icon :size="16">
+              <Sunny v-if="resolvedDark" />
+              <Moon v-else />
+            </el-icon>
+          </button>
+          <TitleBarControls v-if="!isMacOS" />
+        </div>
+      </header>
+
+      <main class="main-content">
       <!-- 剪贴板页面 -->
       <div v-if="activeTab === 'clipboard'" class="content">
       <section class="panel">
@@ -477,55 +528,18 @@ watch(customDate, () => {
               <span>{{ itemTypeLabel(item) }}</span>
               <span>{{ formatTime(item.createdAt) }}</span>
             </div>
-            <div v-if="item.format === 'image'" class="history-image-preview">
+            <div
+              v-if="item.format === 'image'"
+              class="history-image-preview"
+              title="点击查看大图"
+              @click.stop="handleImageClick(item)"
+            >
               <LazyClipboardImage :item-id="item.id" class="thumbnail" alt="预览" />
+              <span class="image-expand-hint">点击查看大图</span>
             </div>
             <div v-else class="history-preview" v-html="highlightText(shortPreview(item), query)" />
           </div>
           <el-empty v-if="!loading && items.length === 0" description="暂无记录" />
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <span>预览</span>
-        </div>
-        <div class="panel-body" v-if="selectedItem">
-          <div class="preview-title">{{ formatLabel[selectedItem.format] }}</div>
-
-          <template v-if="selectedItem.format === 'image'">
-            <LazyClipboardImage class="preview-image" :item-id="selectedItem.id" alt="clipboard" />
-          </template>
-
-          <template v-else-if="selectedItem.format === 'color'">
-            <div style="display: flex; align-items: center; gap: 12px;">
-              <div
-                style="width: 42px; height: 42px; border-radius: var(--radius-sm); border: 1px solid var(--stroke);"
-                :style="{ background: selectedItem.color || selectedItem.text || '#fff' }"
-              />
-              <div class="preview-text">{{ selectedItem.color || selectedItem.text }}</div>
-            </div>
-          </template>
-
-          <template v-else-if="selectedItem.format === 'file'">
-            <div class="preview-text">{{ selectedItem.filePath }}</div>
-          </template>
-
-          <template v-else>
-            <div
-              v-if="selectedItem.text && isCodeLike(selectedItem.text)"
-              class="preview-code"
-              v-html="codeHtml(selectedItem.text)"
-            />
-            <div
-              v-else
-              class="preview-text"
-              v-html="highlightText(selectedItem.text || selectedItem.html || '', query)"
-            />
-          </template>
-        </div>
-        <div class="panel-body" v-else>
-          <el-empty description="请选择一条记录" />
         </div>
       </section>
     </div>
@@ -534,28 +548,23 @@ watch(customDate, () => {
       <div v-else-if="activeTab === 'history'" class="history-manager-container">
         <HistoryManager />
       </div>
-    </main>
 
-    <!-- 设置对话框：左栏固定导航，右侧内容独立滚动，全部改动即时生效 -->
-    <el-dialog
-      v-model="showSettingsDialog"
-      title="设置"
-      width="min(860px, 94vw)"
-      class="settings-dialog"
-      align-center
-    >
-      <SettingsShell
-        :active="showSettingsDialog"
-        :current-hotkey="newHotkey"
-        :autostart="autostart"
-        :update-checking="updateChecking"
-        :update-status-text="updateStatusText"
-        :update-action-text="updateState.phase === 'ready' ? '重启并安装' : '检查更新'"
-        @update:current-hotkey="handleHotkeyChange"
-        @update:autostart="handleAutostartChange"
-        @clear-data="clearDataInSettings"
-        @update-action="handleUpdateAction"
-      />
-    </el-dialog>
+      <!-- 设置页：与其它页面同级的右侧内容，不再是弹窗 -->
+      <div v-else-if="activeTab === 'settings'" class="settings-page">
+        <SettingsShell
+          :active="activeTab === 'settings'"
+          :current-hotkey="newHotkey"
+          :autostart="autostart"
+          :update-checking="updateChecking"
+          :update-status-text="updateStatusText"
+          :update-action-text="updateState.phase === 'ready' ? '重启并安装' : '检查更新'"
+          @update:current-hotkey="handleHotkeyChange"
+          @update:autostart="handleAutostartChange"
+          @clear-data="clearDataInSettings"
+          @update-action="handleUpdateAction"
+        />
+      </div>
+    </main>
+    </div>
   </div>
 </template>

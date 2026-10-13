@@ -56,53 +56,232 @@ select {
   min-height: 100vh;
 }
 
+/*
+ * 整体骨架：左侧固定侧边栏 + 右侧主列。
+ * 侧边栏不透明（用毛玻璃而非完全透明），内容区透出皮肤背景——
+/*
+ * 整体骨架：左侧固定侧边栏 + 右侧主列。
+ * 窗口四周留出间距，侧边栏与主列各自成为一张独立卡片，
+ * 皮肤背景从卡片之间的空隙透出——既保留沉浸感，又让结构清晰。
+ */
 .app-shell {
   height: 100vh;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  gap: 10px;
+  padding: 10px;
+  overflow: hidden;
 }
 
-/*
- * 顶部标题栏（自绘，无边框窗口）：整条透明，不再单独做一块面板，
- * 让皮肤背景一路透到窗口顶端，视觉上只保留内容面板这一层。
- * 整条可拖动，双击最大化由 Tauri 处理；窗口控制按钮在 TitleBarControls
- * 里按平台渲染（macOS 靠左红绿灯 / Windows 右上角标题栏按钮）。
- */
-.toolbar {
+/* ── 左侧侧边栏 ───────────────────────────────────────────── */
+
+.sidebar {
+  flex: 0 0 auto;
+  width: 208px;
+  display: flex;
+  flex-direction: column;
+  padding: 0 10px;
+  /* 不透明底衬：皮肤背景只透在卡片缝隙，导航区保持稳定可读 */
+  background: var(--glass-strong);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(10px) saturate(1.2);
+  /* 裁掉超出圆角的子元素（品牌区紧贴顶边，不加裁切会露出直角） */
+  overflow: hidden;
+  user-select: none;
+}
+
+/* 品牌区兼作标题栏拖拽区：macOS 红绿灯放这里才贴近原生位置 */
+.sidebar-brand {
   flex: 0 0 auto;
   height: 52px;
   display: flex;
   align-items: center;
+  gap: 8px;
+  /* 侧边栏本身有 10px 左右内边距，这里顶到边，红绿灯才贴近窗口左上角 */
+  margin: 0 -10px;
+  padding-left: 16px;
+  padding-right: 10px;
+}
+
+.brand-logo {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.brand-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.sidebar-nav {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  padding-top: 4px;
+}
+
+/* 导航项：图标 + 文字，选中态用胶囊底衬（与旧 tab 一致的观感） */
+.sidebar-item {
+  display: flex;
+  align-items: center;
   gap: 10px;
+  width: 100%;
+  height: 36px;
   padding: 0 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.sidebar-item:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+}
+
+.sidebar-item.is-active {
+  background: var(--selection-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.sidebar-item-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 底部用户区：登录入口的占位，功能上线前只占位不渲染内容 */
+.sidebar-footer {
+  flex: 0 0 auto;
+  /* 与品牌区对称：顶到侧边栏内壁，让分隔线横贯整条 */
+  margin: 0 -10px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--stroke);
+}
+
+.user-slot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  cursor: default;
+}
+
+.user-avatar {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--card-inset);
+  border: 1px solid var(--stroke);
+}
+
+.user-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.user-name,
+.user-sub {
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-name {
+  color: var(--text-soft);
+}
+
+.user-sub {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ── 右侧主列 ───────────────────────────────────────────── */
+
+/*
+ * 右侧主列：一整张卡片，标题栏与内容区共用同一层圆角边框，
+ * 中间只用一条发丝线分隔——观感上是一个连续的整体，而不是两块悬浮的板子。
+ */
+.main-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+  overflow: hidden;
+}
+
+/*
+ * 右侧标题栏：整条可拖动，双击最大化由 Tauri 处理。
+ * 窗口控制按钮按平台渲染——macOS 红绿灯在侧边栏左上（见 .sidebar-brand），
+ * Windows 按钮在这里的右上角（见 .header-actions）。
+ * 底部一条发丝线与内容区分界，不再另起一层卡片。
+ */
+.main-header {
+  flex: 0 0 auto;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 0 0 18px;
+  border-bottom: 1px solid var(--stroke);
   user-select: none;
 }
 
-/* Windows 的标题栏按钮贴住窗口右上角，右侧不留内边距 */
-.toolbar--windows {
-  padding-right: 0;
+.page-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
 }
 
-/* macOS 红绿灯占住左上角，主导航往右让一点 */
-.toolbar--macos .main-tabs {
-  margin-left: 8px;
-}
-
-/* 无系统边框后，工具栏中间的空白区域负责拖动窗口（双击最大化由 Tauri 处理） */
-.toolbar-drag {
+/* 中部空白拖拽区：窗口主要靠它拖动 */
+.header-drag {
   flex: 1;
   align-self: stretch;
   min-width: 12px;
 }
 
-.toolbar-actions {
+.header-actions {
   display: flex;
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
 }
 
-/* 顶部工具栏的幽灵图标按钮：主题切换 / 设置 */
+/* 顶部工具栏的幽灵图标按钮：主题切换 */
 .toolbar-icon-btn {
   width: 32px;
   height: 32px;
@@ -118,95 +297,55 @@ select {
   transition: background-color 0.12s ease, color 0.12s ease;
 }
 
-.toolbar-icon-btn:hover {
-  background: color-mix(in srgb, var(--text) 9%, transparent);
-  color: var(--text);
-}
-
-.toolbar-icon-btn:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
-}
-
-/* 主导航标签：胶囊高亮（透明标题栏上比下划线更稳），加 tab 无需改结构 */
-.main-tabs {
-  flex: 0 0 auto;
-}
-
-.main-tabs .el-tabs__header {
-  margin: 0;
-}
-
-.main-tabs .el-tabs__nav-wrap::after {
-  height: 0;
-}
-
-.main-tabs .el-tabs__active-bar {
-  display: none;
-}
-
-.main-tabs .el-tabs__item {
-  height: 32px;
-  line-height: 32px;
-  padding: 0 16px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-soft);
-  border-radius: var(--radius-pill);
-  transition: background-color 0.12s ease, color 0.12s ease;
-}
-
-.main-tabs .el-tabs__item:hover {
-  color: var(--text);
-  background: color-mix(in srgb, var(--text) 7%, transparent);
-}
-
-.main-tabs .el-tabs__item.is-active {
-  color: var(--accent);
-  background: var(--selection-bg);
-  font-weight: 600;
-}
-
-/* 内容区：标题栏以下统一收进这条，左右留边、底部留边 */
-.content-area {
+/*
+ * 右侧内容区：已由 .main-column 统一承担卡片外观（边框/圆角/阴影），
+ * 这里只负责留白与滚动，不再重复套一层卡片，否则会出现"卡片套卡片"的割裂感。
+ */
+.main-content {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 2px 12px 12px;
+  padding: 10px 14px 14px;
+}
+
+/* 设置页：铺满内容区，内部由 SettingsShell 自己分栏与滚动 */
+.settings-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .history-manager-container {
   flex: 1;
   min-height: 0;
-  background: var(--panel);
-  border: 1px solid var(--stroke);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-soft);
   overflow: hidden;
 }
 
+/* 剪贴板页只剩历史列表一个面板，单列铺满宽度 */
 .content {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 1fr;
   gap: 8px;
   flex: 1;
   min-height: 0;
 }
 
+/*
+ * 面板：右侧卡片外观已由 .main-column 提供，这里只保留结构与分隔线。
+ * 圆角、边框、阴影全部去掉——内容直接贴着卡片内壁排布，才是"一个整体"。
+ */
 .panel {
-  background: var(--panel);
-  border: 1px solid var(--stroke);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-soft);
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
 .panel-header {
-  padding: 12px 16px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--stroke);
   display: flex;
   align-items: center;
@@ -214,16 +353,16 @@ select {
 }
 
 .panel-body {
-  padding: 12px;
+  padding: 10px 14px;
   overflow: auto;
   flex: 1;
 }
 
 .history-item {
   border: 1px solid var(--stroke);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-  margin-bottom: 10px;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 8px;
   cursor: pointer;
   transition: background-color 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
   background: var(--card-bg);
@@ -262,11 +401,50 @@ select {
   text-overflow: ellipsis;
 }
 
+/* 图片条目：整块可点开大图，缩略图悬停时给放大提示 */
 .history-image-preview {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 4px 0;
+  cursor: zoom-in;
+  border-radius: var(--radius-sm);
+  transition: background-color 0.12s ease;
+}
+
+.history-image-preview:hover {
+  background: var(--hover-bg);
+}
+
+.history-image-preview .thumbnail {
+  transition: transform 0.14s ease;
+}
+
+.history-image-preview:hover .thumbnail {
+  transform: scale(1.06);
+}
+
+/* 悬停时浮出的"点击查看大图"提示 */
+.image-expand-hint {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(12, 14, 18, 0.78);
+  color: #ffffff;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s ease;
+}
+
+.history-image-preview:hover .image-expand-hint {
+  opacity: 1;
 }
 
 .thumbnail {
@@ -278,36 +456,8 @@ select {
 }
 
 .date-tabs {
-  padding: 0 12px 8px;
+  padding: 0 14px 6px;
   border-bottom: 1px solid var(--stroke);
-}
-
-.preview-title {
-  font-weight: 600;
-  font-size: 16px;
-  margin-bottom: 12px;
-}
-
-.preview-image {
-  max-width: 100%;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--stroke);
-  background: var(--image-bg);
-}
-
-.preview-text {
-  white-space: pre-wrap;
-  line-height: 1.6;
-  font-size: 14px;
-}
-
-.preview-code {
-  background: #0f172a;
-  color: #e2e8f0;
-  padding: 16px;
-  border-radius: var(--radius-md);
-  font-size: 13px;
-  overflow: auto;
 }
 
 /* 统一 Element Plus 控件为柔和圆角风格 */
@@ -395,20 +545,17 @@ select {
 }
 
 /*
- * ========== 设置弹窗：固定左栏 + 独立滚动的内容区 ==========
+ * ========== 设置页：固定左栏 + 独立滚动的内容区 ==========
  *
- * 弹窗整体限高，滚动的永远只有右侧 .settings-content，左栏导航不会被卷走。
+ * 设置已从弹窗改为右侧内容区的一个页面，因此 .settings-shell 铺满整个内容区，
+ * 滚动的永远只有右侧 .settings-content，左栏导航不会被卷走。
  * 视觉上用"行式"布局：小节标题 + 分隔线 + 右对齐控件，不再一层层包卡片。
  */
-.settings-dialog .el-dialog__body {
-  padding: 0;
-  overflow: hidden;
-}
-
 .settings-shell {
   display: grid;
   grid-template-columns: 168px minmax(0, 1fr);
-  height: min(560px, 76vh);
+  flex: 1;
+  min-height: 0;
 }
 
 .settings-nav {
@@ -450,7 +597,7 @@ select {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 6px 24px 20px;
+  padding: 4px 22px 18px;
 }
 
 /* ===== 行式设置：标签与描述在左，控件在右，行间用发丝线分隔 ===== */
