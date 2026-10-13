@@ -2,9 +2,13 @@
 import { ref, watch } from "vue";
 import { Brush, Tools } from "@element-plus/icons-vue";
 import ThemeSettings from "@/components/ThemeSettings.vue";
+import { hotkeyPlaceholder, modifierHint } from "@/services/platform";
 
 /**
- * 设置面板内容：左侧图标导航 + 右侧内容区（布局参照 WorkBuddy 的设置弹窗）。
+ * 设置面板内容：左侧导航 + 右侧内容区。
+ *
+ * 布局上左栏固定、右侧独立滚动——弹窗整体限高，滚动的永远只有内容列，
+ * 导航不会被卷走。样式是"行式"设置（分组标题 + 分隔线），不再套一层层卡片。
  *
  * 组件自己持有导航状态与"通用"分组的表单，父组件只负责把外部状态
  * （快捷键、开机启动、更新状态）传进来，并把用户的操作抛出去。
@@ -86,52 +90,60 @@ function syncDraft() {
       <!-- 外观：主题模式、皮肤、背景动效等，改动即时生效 -->
       <ThemeSettings v-if="activeNav === 'appearance'" :active="props.active" />
 
-      <!-- 通用：快捷键、开机启动、数据管理、软件更新 -->
-      <template v-else>
-        <div class="settings-card">
-          <div class="settings-card-title">快捷键</div>
-          <el-input
-            :model-value="hotkeyDraft"
-            placeholder="例如：Win+V, Ctrl+Shift+V"
-            @update:model-value="handleHotkeyInput"
-          />
-          <div class="settings-tip">
-            当前快捷键：<span class="hotkey-value">{{ currentHotkey }}</span>
+      <!-- 通用：快捷键、开机启动、数据管理、软件更新（行式分组） -->
+      <div v-else class="settings-group">
+        <div class="settings-row">
+          <div class="settings-row-main">
+            <div class="settings-row-label">快捷键</div>
+            <div class="settings-row-desc">
+              当前 {{ currentHotkey }}。支持的修饰键：{{ modifierHint }}，按键：A-Z。修改后可能需要重启应用生效。
+            </div>
           </div>
-          <div class="settings-tip">
-            支持的修饰键：Ctrl、Alt、Shift、Win；按键：A-Z。修改后可能需要重启应用生效。
+          <div class="settings-row-control">
+            <el-input
+              :model-value="hotkeyDraft"
+              :placeholder="hotkeyPlaceholder"
+              style="width: 200px"
+              @update:model-value="handleHotkeyInput"
+            />
           </div>
         </div>
 
-        <div class="settings-card">
-          <div class="settings-card-title">
-            开机启动
-            <span class="settings-card-hint">应用随系统自动启动</span>
+        <div class="settings-row">
+          <div class="settings-row-main">
+            <div class="settings-row-label">开机启动</div>
+            <div class="settings-row-desc">登录系统后自动在后台运行</div>
           </div>
-          <el-switch
-            :model-value="autostart"
-            @update:model-value="emit('update:autostart', Boolean($event))"
-          />
+          <div class="settings-row-control">
+            <el-switch
+              :model-value="autostart"
+              @update:model-value="emit('update:autostart', Boolean($event))"
+            />
+          </div>
         </div>
 
-        <div class="settings-card">
-          <div class="settings-card-title">
-            数据管理
-            <span class="settings-card-hint">清空所有剪贴板历史记录</span>
+        <div class="settings-row">
+          <div class="settings-row-main">
+            <div class="settings-row-label">数据管理</div>
+            <div class="settings-row-desc">清空所有剪贴板历史记录，操作不可恢复</div>
           </div>
-          <el-button type="danger" plain @click="emit('clear-data')">清理存储</el-button>
+          <div class="settings-row-control">
+            <el-button type="danger" plain @click="emit('clear-data')">清理存储</el-button>
+          </div>
         </div>
 
-        <div class="settings-card">
-          <div class="settings-card-title">
-            软件更新
-            <span class="settings-card-hint">{{ updateStatusText }}</span>
+        <div class="settings-row">
+          <div class="settings-row-main">
+            <div class="settings-row-label">软件更新</div>
+            <div class="settings-row-desc">{{ updateStatusText }}</div>
           </div>
-          <el-button :loading="updateChecking" @click="emit('update-action')">
-            {{ updateActionText }}
-          </el-button>
+          <div class="settings-row-control">
+            <el-button :loading="updateChecking" @click="emit('update-action')">
+              {{ updateActionText }}
+            </el-button>
+          </div>
         </div>
-      </template>
+      </div>
     </section>
   </div>
 </template>

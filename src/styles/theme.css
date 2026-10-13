@@ -15,6 +15,9 @@
 :root {
   --accent-contrast: #ffffff;
   --skin-glow: none;
+  /* macOS 红绿灯失焦态（TitleBarControls 使用） */
+  --tl-inactive: #d0d0d0;
+  --tl-inactive-border: rgba(0, 0, 0, 0.12);
   /* 皮肤背景默认值：无背景、面板不透明、色晕沿用旧强度 */
   --skin-backdrop-image: none;
   --skin-backdrop-color: transparent;
@@ -274,6 +277,10 @@
 
   /* 深色下主色自动提亮，保证对比度；皮肤可用 --skin-primary-dark 覆盖 */
   --skin-primary-effective: var(--skin-primary-dark, color-mix(in srgb, var(--skin-primary) 72%, #ffffff));
+
+  /* macOS 红绿灯失焦态：深色下用暗灰 */
+  --tl-inactive: #5a5a5a;
+  --tl-inactive-border: rgba(255, 255, 255, 0.10);
 
   --accent: var(--skin-primary-effective);
   --accent-hover: color-mix(in srgb, var(--skin-primary-effective) 85%, #ffffff);

@@ -60,21 +60,32 @@ select {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px;
 }
 
+/*
+ * 顶部标题栏（自绘，无边框窗口）：整条透明，不再单独做一块面板，
+ * 让皮肤背景一路透到窗口顶端，视觉上只保留内容面板这一层。
+ * 整条可拖动，双击最大化由 Tauri 处理；窗口控制按钮在 TitleBarControls
+ * 里按平台渲染（macOS 靠左红绿灯 / Windows 右上角标题栏按钮）。
+ */
 .toolbar {
-  background: var(--panel);
-  border: 1px solid var(--stroke);
-  border-radius: var(--radius-lg);
-  padding: 6px 12px;
-  box-shadow: var(--shadow-soft);
+  flex: 0 0 auto;
+  height: 52px;
   display: flex;
   align-items: center;
-  gap: 12px;
-  /* 工具栏同时是自定义标题栏：拖动时不要选中文字 */
+  gap: 10px;
+  padding: 0 10px;
   user-select: none;
+}
+
+/* Windows 的标题栏按钮贴住窗口右上角，右侧不留内边距 */
+.toolbar--windows {
+  padding-right: 0;
+}
+
+/* macOS 红绿灯占住左上角，主导航往右让一点 */
+.toolbar--macos .main-tabs {
+  margin-left: 8px;
 }
 
 /* 无系统边框后，工具栏中间的空白区域负责拖动窗口（双击最大化由 Tauri 处理） */
@@ -84,6 +95,40 @@ select {
   min-width: 12px;
 }
 
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+/* 顶部工具栏的幽灵图标按钮：主题切换 / 设置 */
+.toolbar-icon-btn {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.toolbar-icon-btn:hover {
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  color: var(--text);
+}
+
+.toolbar-icon-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* 主导航标签：胶囊高亮（透明标题栏上比下划线更稳），加 tab 无需改结构 */
 .main-tabs {
   flex: 0 0 auto;
 }
@@ -96,69 +141,50 @@ select {
   height: 0;
 }
 
+.main-tabs .el-tabs__active-bar {
+  display: none;
+}
+
 .main-tabs .el-tabs__item {
-  padding: 0 20px;
-  height: 40px;
-  line-height: 40px;
-  font-size: 14px;
-  font-weight: 400;
+  height: 32px;
+  line-height: 32px;
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-soft);
+  border-radius: var(--radius-pill);
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.main-tabs .el-tabs__item:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+.main-tabs .el-tabs__item.is-active {
+  color: var(--accent);
+  background: var(--selection-bg);
+  font-weight: 600;
+}
+
+/* 内容区：标题栏以下统一收进这条，左右留边、底部留边 */
+.content-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 12px 12px;
 }
 
 .history-manager-container {
   flex: 1;
+  min-height: 0;
   background: var(--panel);
   border: 1px solid var(--stroke);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-soft);
   overflow: hidden;
-}
-
-/* ========== 自定义标题栏的窗口按钮（最小化 / 最大化 / 关闭） ========== */
-
-.window-controls {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: 2px;
-}
-
-.window-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 28px;
-  padding: 0;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-soft);
-  cursor: pointer;
-  transition: background-color 0.12s ease, color 0.12s ease;
-}
-
-.window-btn svg {
-  width: 10px;
-  height: 10px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1;
-}
-
-.window-btn:hover {
-  background: var(--control-bg-hover);
-  color: var(--text);
-}
-
-.window-btn:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
-}
-
-/* 关闭按钮沿用 Windows 的红色悬停反馈 */
-.window-btn-close:hover {
-  background: #c42b1c;
-  color: #ffffff;
 }
 
 .content {
@@ -368,63 +394,37 @@ select {
   border-radius: var(--radius-pill);
 }
 
-/* 设置对话框中的辅助说明文字 */
-.settings-tip {
-  margin-top: 4px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.hotkey-value {
-  color: var(--el-color-primary);
-  font-weight: bold;
-}
-
-/* 设置弹框：小屏幕下限高滚动，内容不溢出 */
-.settings-dialog .el-dialog__body {
-  padding-top: 6px;
-  max-height: 70vh;
-  overflow-y: auto;
-}
-
-.settings-dialog .el-tabs__header {
-  margin-bottom: 12px;
-}
-
-.general-form {
-  padding-right: 4px;
-}
-
 /*
- * ========== 设置面板：左侧图标导航 + 右侧内容（参照 WorkBuddy 的设置弹窗） ==========
+ * ========== 设置弹窗：固定左栏 + 独立滚动的内容区 ==========
  *
- * 左栏固定宽度列出分组，右侧内容区独立滚动；窄窗口下折叠成顶部横向标签，
- * 保证小尺寸下依然能用。
+ * 弹窗整体限高，滚动的永远只有右侧 .settings-content，左栏导航不会被卷走。
+ * 视觉上用"行式"布局：小节标题 + 分隔线 + 右对齐控件，不再一层层包卡片。
  */
+.settings-dialog .el-dialog__body {
+  padding: 0;
+  overflow: hidden;
+}
+
 .settings-shell {
   display: grid;
-  grid-template-columns: 148px 1fr;
-  gap: 16px;
-  min-height: 0;
+  grid-template-columns: 168px minmax(0, 1fr);
+  height: min(560px, 76vh);
 }
 
 .settings-nav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 8px;
-  border-radius: var(--radius-lg);
-  background: var(--nav-bg);
-  border: 1px solid var(--stroke);
-  align-self: start;
+  gap: 4px;
+  padding: 14px 10px;
+  border-right: 1px solid var(--stroke);
+  min-height: 0;
 }
 
 .settings-nav-item {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 10px;
+  padding: 8px 12px;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -436,56 +436,145 @@ select {
 }
 
 .settings-nav-item:hover {
-  background: var(--card-bg-hover);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
   color: var(--text);
 }
 
 .settings-nav-item.is-active {
-  background: var(--card-bg);
+  background: var(--selection-bg);
   color: var(--accent);
   font-weight: 600;
-  box-shadow: var(--shadow-soft);
 }
 
 .settings-content {
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 24px 20px;
+}
+
+/* ===== 行式设置：标签与描述在左，控件在右，行间用发丝线分隔 ===== */
+
+.settings-group {
   display: flex;
   flex-direction: column;
-  gap: 14px;
 }
 
-.settings-card {
-  padding: 16px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--stroke);
-  background: var(--card-bg);
-  box-shadow: var(--shadow-soft);
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 14px 0;
+  min-height: 56px;
 }
 
-.settings-card-title {
+.settings-row + .settings-row {
+  border-top: 1px solid var(--stroke);
+}
+
+.settings-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-row-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.settings-row-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.settings-row-control {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 带整块内容的设置小节（如皮肤宫格）：标题行 + 内容 */
+.settings-block {
+  margin-top: 22px;
+}
+
+.settings-block-header {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
+  gap: 10px;
+  flex-wrap: wrap;
   margin-bottom: 12px;
 }
 
-.settings-card-title .settings-card-hint {
+.settings-block-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-block-hint {
   font-size: 12px;
-  font-weight: 400;
   color: var(--muted);
+}
+
+/* ===== 胶囊分段器：设置弹窗里统一的选项组 ===== */
+
+.settings-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-pill);
+  background: var(--card-inset);
+}
+
+.settings-segmented.is-disabled {
+  opacity: 0.55;
+}
+
+.settings-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.settings-segment:hover:not(:disabled):not(.is-active) {
+  color: var(--text);
+}
+
+.settings-segment:disabled {
+  cursor: not-allowed;
+}
+
+.settings-segment.is-active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 600;
 }
 
 @media (max-width: 620px) {
   .settings-shell {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .settings-nav {
     flex-direction: row;
     overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--stroke);
   }
 }
 

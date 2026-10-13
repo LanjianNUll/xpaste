@@ -291,30 +291,94 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="theme-settings">
-    <section class="settings-card">
-      <div class="settings-card-title">
-        主题模式
-        <span class="settings-card-hint">浅色 / 深色 / 跟随系统</span>
+    <!-- 顶部一组行式设置：模式 / 动效 / 画法，控件右对齐 -->
+    <div class="settings-group">
+      <div class="settings-row">
+        <div class="settings-row-main">
+          <div class="settings-row-label">主题模式</div>
+          <div class="settings-row-desc">浅色、深色或跟随系统，所有窗口即时同步</div>
+        </div>
+        <div class="settings-row-control">
+          <div class="settings-segmented">
+            <button
+              v-for="option in modeOptions"
+              :key="option.value"
+              type="button"
+              class="settings-segment"
+              :class="{ 'is-active': mode === option.value }"
+              @click="handleSelectMode(option.value)"
+            >
+              <el-icon :size="13"><component :is="option.icon" /></el-icon>
+              <span>{{ option.label }}</span>
+            </button>
+          </div>
+        </div>
       </div>
-      <div class="mode-options">
-        <button
-          v-for="option in modeOptions"
-          :key="option.value"
-          type="button"
-          class="mode-option"
-          :class="{ 'is-active': mode === option.value }"
-          @click="handleSelectMode(option.value)"
-        >
-          <el-icon :size="15"><component :is="option.icon" /></el-icon>
-          <span>{{ option.label }}</span>
-        </button>
-      </div>
-    </section>
 
-    <section class="settings-card">
-      <div class="settings-card-title">
-        皮肤
-        <span class="settings-card-hint">每套皮肤自带专属背景风景与背景动效</span>
+      <div class="settings-row">
+        <div class="settings-row-main">
+          <div class="settings-row-label">背景画法</div>
+          <div class="settings-row-desc">
+            {{ backdropStyle === "photo"
+              ? "实景照片（来源见 src/assets/skins/CREDITS.md）"
+              : "纯 CSS 渐变风景，分辨率无关、不占体积" }}
+          </div>
+        </div>
+        <div class="settings-row-control">
+          <div class="settings-segmented">
+            <button
+              v-for="option in BACKDROP_STYLE_OPTIONS"
+              :key="option.value"
+              type="button"
+              class="settings-segment"
+              :class="{ 'is-active': backdropStyle === option.value }"
+              @click="handleSelectBackdropStyle(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-main">
+          <div class="settings-row-label">背景动效</div>
+          <div class="settings-row-desc">
+            粒子随皮肤变化（柳絮 / 落叶 / 飞雪 / 星尘…）；系统开启"减少动态效果"时自动停用
+          </div>
+        </div>
+        <div class="settings-row-control">
+          <el-switch :model-value="effectsEnabled" @change="handleToggleEffects" />
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-main">
+          <div class="settings-row-label">动效密度</div>
+        </div>
+        <div class="settings-row-control">
+          <div class="settings-segmented" :class="{ 'is-disabled': !effectsEnabled }">
+            <button
+              v-for="option in AMBIENT_DENSITY_OPTIONS"
+              :key="option.value"
+              type="button"
+              class="settings-segment"
+              :disabled="!effectsEnabled"
+              :class="{ 'is-active': effectDensity === option.value }"
+              @click="handleDensityChange(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 皮肤：宫格缩略图，本身就是选择器，不再包卡片 -->
+    <section class="settings-block">
+      <div class="settings-block-header">
+        <span class="settings-block-title">皮肤</span>
+        <span class="settings-block-hint">每套皮肤自带专属背景风景与背景动效</span>
       </div>
       <div class="skin-grid">
         <button
@@ -368,63 +432,10 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <section class="settings-card">
-      <div class="settings-card-title">背景画法</div>
-      <div class="effect-row">
-        <div class="effect-density">
-          <button
-            v-for="option in BACKDROP_STYLE_OPTIONS"
-            :key="option.value"
-            type="button"
-            class="density-segment"
-            :class="{ 'is-active': backdropStyle === option.value }"
-            @click="handleSelectBackdropStyle(option.value)"
-          >
-            {{ option.label }}
-          </button>
-        </div>
-        <span class="ts-hint effect-hint">
-          {{ backdropStyle === "photo"
-            ? "实景照片（来源见 src/assets/skins/CREDITS.md）"
-            : "纯 CSS 渐变风景，分辨率无关、不占体积" }}
-        </span>
-      </div>
-    </section>
-
-    <section class="settings-card">
-      <div class="settings-card-title">
-        背景动效
-        <span class="settings-card-hint">粒子随皮肤变化（柳絮 / 落叶 / 飞雪 / 星尘…）</span>
-      </div>
-      <div class="effect-row">
-        <el-switch
-          :model-value="effectsEnabled"
-          @change="handleToggleEffects"
-        />
-        <span class="effect-state">{{ effectsEnabled ? "已开启" : "已关闭" }}</span>
-        <div class="effect-density" :class="{ 'is-disabled': !effectsEnabled }">
-          <button
-            v-for="option in AMBIENT_DENSITY_OPTIONS"
-            :key="option.value"
-            type="button"
-            class="density-segment"
-            :disabled="!effectsEnabled"
-            :class="{ 'is-active': effectDensity === option.value }"
-            @click="handleDensityChange(option.value)"
-          >
-            {{ option.label }}
-          </button>
-        </div>
-      </div>
-      <div class="ts-hint effect-hint">
-        系统开启"减少动态效果"时会自动停用。
-      </div>
-    </section>
-
-    <!-- 自定义皮肤编辑器（高级） -->
-    <section v-if="editorVisible" class="settings-card custom-editor">
+    <!-- 自定义皮肤编辑器（高级）：展开时以嵌入面板呈现 -->
+    <section v-if="editorVisible" class="custom-editor">
       <div class="custom-editor-header">
-        <span class="settings-card-title" style="margin-bottom: 0;">自定义皮肤</span>
+        <span class="custom-editor-title">自定义皮肤</span>
         <button type="button" class="text-btn" @click="closeEditor">收起</button>
       </div>
 
@@ -508,53 +519,19 @@ onBeforeUnmount(() => {
 <style scoped>
 /*
  * 外观设置内部样式。
- * 外层卡片（.settings-card / .settings-card-title）由 app.css 提供，
- * 这里只负责这个面板特有的控件：模式选择器、皮肤宫格、密度分段器、颜色编辑器。
+ * 行式布局的公共样式（.settings-group / .settings-row / .settings-segmented
+ * 等）由 app.css 提供，这里只负责外观页特有的控件：皮肤宫格与颜色编辑器。
  */
 .theme-settings {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 22px;
 }
 
 .ts-hint {
   font-size: 12px;
   font-weight: 400;
   color: var(--muted);
-}
-
-/* 主题模式：图标 + 文案的胶囊按钮 */
-.mode-options {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-}
-
-.mode-option {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 38px;
-  border: 1px solid var(--stroke);
-  border-radius: var(--radius-md);
-  background: var(--card-bg);
-  color: var(--text);
-  font-size: 13px;
-  cursor: pointer;
-  transition: border-color 0.12s ease, color 0.12s ease, background-color 0.12s ease;
-}
-
-.mode-option:hover {
-  background: var(--card-bg-hover);
-  border-color: var(--stroke-strong);
-}
-
-.mode-option.is-active {
-  border-color: var(--accent);
-  background: var(--selection-bg);
-  color: var(--accent);
-  font-weight: 600;
 }
 
 /* 皮肤宫格：缩略图占卡片主体，选中态用主色描边 + 轻微内发光 */
@@ -648,63 +625,11 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
 }
 
-.effect-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.effect-state {
-  font-size: 12px;
-  color: var(--muted);
-  min-width: 44px;
-}
-
-/* 分段器：像 WorkBuddy 的胶囊选项组，选中项用主色填充 */
-.effect-density {
-  display: inline-flex;
-  gap: 0;
-  margin-left: auto;
-  padding: 2px;
-  border: 1px solid var(--stroke);
-  border-radius: var(--radius-pill);
-  background: var(--card-inset);
-  overflow: hidden;
-}
-
-.density-segment {
-  padding: 5px 14px;
-  border: none;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  cursor: pointer;
-  transition: background-color 0.12s ease, color 0.12s ease;
-}
-
-.density-segment:hover:not(:disabled):not(.is-active) {
-  color: var(--text);
-}
-
-.density-segment:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-.density-segment.is-active {
-  background: var(--accent);
-  color: var(--accent-contrast);
-  font-weight: 600;
-}
-
-.effect-hint {
-  line-height: 1.5;
-  margin-top: 8px;
-}
-
 .custom-editor {
-  border-color: var(--selection-border);
+  border: 1px solid var(--selection-border);
+  background: var(--card-inset);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
 }
 
 .custom-editor-header {
@@ -712,6 +637,12 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 12px;
+}
+
+.custom-editor-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .editor-grid {
@@ -786,15 +717,5 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--muted);
   text-align: center;
-}
-
-@media (max-width: 560px) {
-  .effect-density {
-    margin-left: 0;
-  }
-
-  .effect-row {
-    flex-wrap: wrap;
-  }
 }
 </style>
