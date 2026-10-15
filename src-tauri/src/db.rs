@@ -6,7 +6,8 @@ use sqlx::{
 };
 
 use crate::models::{
-    content_fingerprint, ClipboardItemRow, ClipboardItemSummaryRow, NewClipboardItem,
+    content_fingerprint, ClipboardItemRow, ClipboardItemSummaryRow, FavoriteSummaryRow,
+    NewClipboardItem,
 };
 
 #[derive(sqlx::FromRow)]
@@ -81,6 +82,40 @@ pub async fn init_db(db_path: &Path) -> Result<SqlitePool, sqlx::Error> {
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_clipboard_items_category_created_at
          ON clipboard_items(category, created_at DESC)",
+    )
+    .execute(&pool)
+    .await?;
+
+    // 收藏是独立于历史的快照表：内容整行拷贝，删除/清空历史不影响收藏。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS favorites (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      content_hash TEXT NOT NULL,
+      format TEXT NOT NULL,
+      category TEXT NOT NULL,
+      text TEXT,
+      html TEXT,
+      file_path TEXT,
+      color TEXT,
+      image BLOB,
+      image_width INTEGER,
+      image_height INTEGER,
+      copy_count INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      favorited_at INTEGER NOT NULL
+    )",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_favorites_content_hash
+         ON favorites(content_hash)",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_favorites_favorited_at
+         ON favorites(favorited_at DESC)",
     )
     .execute(&pool)
     .await?;
@@ -219,7 +254,9 @@ pub async fn list_items(
     let rows = sqlx::query_as::<_, ClipboardItemSummaryRow>(
         "SELECT id, format, category, substr(text, 1, 4096) AS text,
             substr(html, 1, 4096) AS html, file_path, color, image_width, image_height, created_at,
-            copy_count
+            copy_count,
+            EXISTS(SELECT 1 FROM favorites f WHERE f.content_hash = clipboard_items.content_hash)
+              AS favorited
      FROM clipboard_items
      ORDER BY created_at DESC
      LIMIT ?",
@@ -240,7 +277,9 @@ pub async fn search_items(
     let rows = sqlx::query_as::<_, ClipboardItemSummaryRow>(
         "SELECT id, format, category, substr(text, 1, 4096) AS text,
             substr(html, 1, 4096) AS html, file_path, color, image_width, image_height, created_at,
-            copy_count
+            copy_count,
+            EXISTS(SELECT 1 FROM favorites f WHERE f.content_hash = clipboard_items.content_hash)
+              AS favorited
      FROM clipboard_items
      WHERE text LIKE ? OR html LIKE ? OR file_path LIKE ? OR color LIKE ?
      ORDER BY created_at DESC
@@ -259,7 +298,7 @@ pub async fn search_items(
 
 pub async fn get_item(pool: &SqlitePool, id: i64) -> Result<Option<ClipboardItemRow>, sqlx::Error> {
     let row = sqlx::query_as::<_, ClipboardItemRow>(
-        "SELECT format, text, html, file_path, color, image, image_width, image_height
+        "SELECT format, category, text, html, file_path, color, image, image_width, image_height
      FROM clipboard_items
      WHERE id = ?",
     )
@@ -279,7 +318,9 @@ pub async fn list_items_by_date_range(
     let rows = sqlx::query_as::<_, ClipboardItemSummaryRow>(
         "SELECT id, format, category, substr(text, 1, 4096) AS text,
             substr(html, 1, 4096) AS html, file_path, color, image_width, image_height, created_at,
-            copy_count
+            copy_count,
+            EXISTS(SELECT 1 FROM favorites f WHERE f.content_hash = clipboard_items.content_hash)
+              AS favorited
      FROM clipboard_items
      WHERE created_at >= ? AND created_at <= ?
      ORDER BY created_at DESC
@@ -305,7 +346,9 @@ pub async fn search_items_by_date_range(
     let rows = sqlx::query_as::<_, ClipboardItemSummaryRow>(
         "SELECT id, format, category, substr(text, 1, 4096) AS text,
             substr(html, 1, 4096) AS html, file_path, color, image_width, image_height, created_at,
-            copy_count
+            copy_count,
+            EXISTS(SELECT 1 FROM favorites f WHERE f.content_hash = clipboard_items.content_hash)
+              AS favorited
      FROM clipboard_items
      WHERE (text LIKE ? OR html LIKE ? OR file_path LIKE ? OR color LIKE ?)
        AND created_at >= ? AND created_at <= ?
@@ -402,5 +445,136 @@ pub async fn count_items_by_category(pool: &SqlitePool) -> Result<Vec<(String, i
     )
     .fetch_all(pool)
     .await?;
+    Ok(rows)
+}
+
+/// 收藏内容快照：整行拷入 favorites，已存在相同指纹时静默跳过（幂等）。
+pub async fn insert_favorite(
+    pool: &SqlitePool,
+    row: &ClipboardItemRow,
+    content_hash: &str,
+    created_at: i64,
+    favorited_at: i64,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "INSERT OR IGNORE INTO favorites (
+        content_hash, format, category, text, html, file_path, color, image,
+        image_width, image_height, copy_count, created_at, favorited_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+    )
+    .bind(content_hash)
+    .bind(&row.format)
+    .bind(&row.category)
+    .bind(&row.text)
+    .bind(&row.html)
+    .bind(&row.file_path)
+    .bind(&row.color)
+    .bind(&row.image)
+    .bind(row.image_width)
+    .bind(row.image_height)
+    .bind(created_at)
+    .bind(favorited_at)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn delete_favorite_by_hash(pool: &SqlitePool, content_hash: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM favorites WHERE content_hash = ?")
+        .bind(content_hash)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn delete_favorite(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM favorites WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// 按历史记录 id 读取内容指纹与原始复制时间，用于收藏快照。
+pub async fn get_item_favorite_source(
+    pool: &SqlitePool,
+    id: i64,
+) -> Result<Option<(String, i64)>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (Option<String>, i64)>(
+        "SELECT content_hash, created_at FROM clipboard_items WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(hash, created_at)| hash.map(|hash| (hash, created_at))))
+}
+
+/// 读取收藏快照的完整行，形状与历史行一致，写回剪贴板/图片编码可直接复用。
+pub async fn get_favorite_row(
+    pool: &SqlitePool,
+    id: i64,
+) -> Result<Option<ClipboardItemRow>, sqlx::Error> {
+    let row = sqlx::query_as::<_, ClipboardItemRow>(
+        "SELECT format, category, text, html, file_path, color, image, image_width, image_height
+     FROM favorites
+     WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row)
+}
+
+pub async fn list_favorites(
+    pool: &SqlitePool,
+    format: Option<&str>,
+    limit: i64,
+) -> Result<Vec<FavoriteSummaryRow>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, FavoriteSummaryRow>(
+        "SELECT id, format, category, substr(text, 1, 4096) AS text,
+            substr(html, 1, 4096) AS html, file_path, color, image_width, image_height,
+            copy_count, favorited_at
+     FROM favorites
+     WHERE (? IS NULL OR format = ?)
+     ORDER BY favorited_at DESC
+     LIMIT ?",
+    )
+    .bind(format)
+    .bind(format)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn search_favorites(
+    pool: &SqlitePool,
+    query: &str,
+    format: Option<&str>,
+    limit: i64,
+) -> Result<Vec<FavoriteSummaryRow>, sqlx::Error> {
+    let pattern = format!("%{query}%");
+    let rows = sqlx::query_as::<_, FavoriteSummaryRow>(
+        "SELECT id, format, category, substr(text, 1, 4096) AS text,
+            substr(html, 1, 4096) AS html, file_path, color, image_width, image_height,
+            copy_count, favorited_at
+     FROM favorites
+     WHERE (? IS NULL OR format = ?)
+       AND (text LIKE ? OR html LIKE ? OR file_path LIKE ? OR color LIKE ?)
+     ORDER BY favorited_at DESC
+     LIMIT ?",
+    )
+    .bind(format)
+    .bind(format)
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
     Ok(rows)
 }

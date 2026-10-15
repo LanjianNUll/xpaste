@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { getClipboardImage } from "@/services/api";
+import type { ItemSource } from "@/types";
 
 const props = defineProps<{
   itemId: number;
   alt?: string;
+  /** 数据来源：收藏快照的缩略图要从 favorites 表读取。 */
+  source?: ItemSource;
 }>();
 
 const imageRef = ref<HTMLImageElement | null>(null);
@@ -18,7 +21,7 @@ async function loadImage() {
   if (imageUrl.value) return;
   const currentVersion = ++requestVersion;
   try {
-    const data = await getClipboardImage(props.itemId, true);
+    const data = await getClipboardImage(props.itemId, true, props.source);
     if (currentVersion === requestVersion) {
       imageUrl.value = `data:image/png;base64,${data}`;
     }

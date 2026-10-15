@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import { ElMessage } from "element-plus";
-import { Calendar, DocumentCopy, Moon, Setting, Sunny } from "@element-plus/icons-vue";
+import { Calendar, DocumentCopy, Moon, Setting, Star, StarFilled, Sunny } from "@element-plus/icons-vue";
 import type { ClipboardItem, DateRangeType, DateRange } from "@/types";
 import {
   fetchHistoryByDate,
@@ -12,6 +12,7 @@ import {
   isAutostartEnabled,
   setAutostart,
   clearHistory,
+  toggleFavorite,
   subscribeClipboardUpdates
 } from "@/services/api";
 import { setThemeMode } from "@/services/theme";
@@ -25,6 +26,7 @@ import {
 } from "@/services/update";
 import { defaultHotkey, isMacOS } from "@/services/platform";
 import HistoryManager from "@/components/HistoryManager.vue";
+import FavoritesView from "@/components/FavoritesView.vue";
 import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
 import ImageViewer from "@/components/ImageViewer.vue";
 import SettingsShell from "@/components/SettingsShell.vue";
@@ -49,6 +51,7 @@ const activeTab = ref("clipboard");
  */
 const mainTabs: Array<{ id: string; label: string; icon: unknown }> = [
   { id: "clipboard", label: "剪贴板", icon: DocumentCopy },
+  { id: "favorites", label: "收藏", icon: Star },
   { id: "history", label: "历史管理", icon: Calendar },
   { id: "settings", label: "设置", icon: Setting }
 ];
@@ -164,6 +167,17 @@ async function handleItemClick(item: ClipboardItem) {
     ElMessage.success("已写入剪贴板，可直接粘贴。");
   } catch (err) {
     ElMessage.error("写入剪贴板失败。");
+  }
+}
+
+/** 收藏切换：本地先改状态给即时反馈，后端广播随后会再刷新整表。 */
+async function handleToggleFavorite(item: ClipboardItem) {
+  try {
+    const favorited = await toggleFavorite(item.id);
+    item.favorited = favorited;
+    ElMessage.success(favorited ? "已收藏" : "已取消收藏");
+  } catch (err) {
+    ElMessage.error("收藏操作失败。");
   }
 }
 
@@ -526,7 +540,21 @@ watch(customDate, () => {
           >
             <div class="history-meta">
               <span>{{ itemTypeLabel(item) }}</span>
-              <span>{{ formatTime(item.createdAt) }}</span>
+              <span class="history-meta-right">
+                <button
+                  type="button"
+                  class="fav-star-btn"
+                  :class="{ 'is-favorited': item.favorited }"
+                  :title="item.favorited ? '取消收藏' : '收藏'"
+                  @click.stop="handleToggleFavorite(item)"
+                >
+                  <el-icon :size="14">
+                    <StarFilled v-if="item.favorited" />
+                    <Star v-else />
+                  </el-icon>
+                </button>
+                <span>{{ formatTime(item.createdAt) }}</span>
+              </span>
             </div>
             <div
               v-if="item.format === 'image'"
@@ -543,6 +571,9 @@ watch(customDate, () => {
         </div>
       </section>
     </div>
+
+    <!-- 收藏页面 -->
+      <FavoritesView v-else-if="activeTab === 'favorites'" />
 
     <!-- 历史管理页面 -->
       <div v-else-if="activeTab === 'history'" class="history-manager-container">

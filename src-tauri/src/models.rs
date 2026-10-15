@@ -7,6 +7,7 @@ use sqlx::FromRow;
 #[derive(Debug, Clone, FromRow)]
 pub struct ClipboardItemRow {
     pub format: String,
+    pub category: String,
     pub text: Option<String>,
     pub html: Option<String>,
     pub file_path: Option<String>,
@@ -29,6 +30,23 @@ pub struct ClipboardItemSummaryRow {
     pub image_height: Option<i64>,
     pub created_at: i64,
     pub copy_count: i64,
+    pub favorited: bool,
+}
+
+/// 收藏列表行：favorited_at 映射到 ClipboardItem.created_at 用于展示。
+#[derive(Debug, Clone, FromRow)]
+pub struct FavoriteSummaryRow {
+    pub id: i64,
+    pub format: String,
+    pub category: String,
+    pub text: Option<String>,
+    pub html: Option<String>,
+    pub file_path: Option<String>,
+    pub color: Option<String>,
+    pub image_width: Option<i64>,
+    pub image_height: Option<i64>,
+    pub copy_count: i64,
+    pub favorited_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,6 +63,7 @@ pub struct ClipboardItem {
     pub image_height: Option<i64>,
     pub created_at: i64,
     pub copy_count: i64,
+    pub favorited: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -97,6 +116,25 @@ impl ClipboardItem {
             image_height: row.image_height,
             created_at: row.created_at,
             copy_count: row.copy_count,
+            favorited: row.favorited,
+        }
+    }
+
+    pub fn from_favorite(row: FavoriteSummaryRow) -> Self {
+        Self {
+            id: row.id,
+            format: row.format,
+            category: row.category,
+            text: row.text,
+            html: row.html,
+            file_path: row.file_path,
+            color: row.color,
+            image_width: row.image_width,
+            image_height: row.image_height,
+            // 收藏列表展示的是收藏时间，而非内容的原始复制时间。
+            created_at: row.favorited_at,
+            copy_count: row.copy_count,
+            favorited: true,
         }
     }
 }

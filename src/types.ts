@@ -8,6 +8,9 @@ export interface DateRange {
   endTs: number;
 }
 
+/** 条目数据来源：历史记录或收藏快照，决定后端按哪个表读写完整内容。 */
+export type ItemSource = "history" | "favorite";
+
 export interface ClipboardItem {
   id: number;
   format: ClipboardFormat;
@@ -20,6 +23,8 @@ export interface ClipboardItem {
   imageHeight?: number | null;
   createdAt: number;
   copyCount: number;
+  /** 历史条目=是否已收藏；收藏列表条目恒为 true。 */
+  favorited: boolean;
 }
 
 export interface HistoryPage {

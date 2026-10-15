@@ -15,6 +15,26 @@ use crate::{classify, db, history_repository};
 const DEFAULT_LIMIT: i64 = 100;
 const MAX_LIMIT: i64 = 200;
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+// 收藏是用户精选的集合，主面板要能一页看全，默认限额比历史更宽。
+const FAVORITE_DEFAULT_LIMIT: i64 = 200;
+const FAVORITE_MAX_LIMIT: i64 = 1000;
+
+/// 条目数据来源：历史记录或收藏快照，决定按哪个表读写完整内容。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemSource {
+    History,
+    Favorite,
+}
+
+impl ItemSource {
+    /// 前端命令参数解析：未传或无法识别时回落到历史记录。
+    pub fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            Some("favorite") => ItemSource::Favorite,
+            _ => ItemSource::History,
+        }
+    }
+}
 
 /// 与 UI 无关的剪贴板 SDK，统一提供历史存储、查询、删除和写回能力。
 #[derive(Clone)]
@@ -156,8 +176,13 @@ impl ClipboardSdk {
             .map_err(database_error)
     }
 
-    pub async fn image_base64(&self, id: i64, thumbnail: bool) -> Result<String, String> {
-        let row = self.get_row(id).await?;
+    pub async fn image_base64(
+        &self,
+        source: ItemSource,
+        id: i64,
+        thumbnail: bool,
+    ) -> Result<String, String> {
+        let row = self.get_row(source, id).await?;
         if row.format != "image" {
             return Err("该记录不是图片".to_string());
         }
@@ -165,9 +190,54 @@ impl ClipboardSdk {
         encode_png(row, max_dimension).ok_or_else(|| "图片数据损坏".to_string())
     }
 
-    pub async fn copy_item(&self, id: i64) -> Result<(), String> {
-        let row = self.get_row(id).await?;
+    pub async fn copy_item(&self, source: ItemSource, id: i64) -> Result<(), String> {
+        let row = self.get_row(source, id).await?;
         write_to_clipboard(row).map_err(|err| format!("写入剪贴板失败：{err}"))
+    }
+
+    /// 收藏切换：已收藏则取消（返回 false），否则把历史条目整行快照进收藏表（返回 true）。
+    pub async fn toggle_favorite(&self, id: i64) -> Result<bool, String> {
+        let (content_hash, created_at) = db::get_item_favorite_source(&self.pool, id)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(|| "记录不存在".to_string())?;
+        if db::delete_favorite_by_hash(&self.pool, &content_hash)
+            .await
+            .map_err(database_error)?
+        {
+            return Ok(false);
+        }
+        let row = self.get_row(ItemSource::History, id).await?;
+        db::insert_favorite(&self.pool, &row, &content_hash, created_at, now_ms())
+            .await
+            .map_err(database_error)?;
+        Ok(true)
+    }
+
+    pub async fn remove_favorite(&self, id: i64) -> Result<(), String> {
+        db::delete_favorite(&self.pool, id)
+            .await
+            .map_err(database_error)
+    }
+
+    pub async fn list_favorites(
+        &self,
+        query: &str,
+        format: Option<String>,
+        limit: Option<i64>,
+    ) -> Result<Vec<ClipboardItem>, String> {
+        let limit = limit
+            .unwrap_or(FAVORITE_DEFAULT_LIMIT)
+            .clamp(1, FAVORITE_MAX_LIMIT);
+        let format = format.filter(|value| !value.trim().is_empty());
+        let rows = if query.trim().is_empty() {
+            db::list_favorites(&self.pool, format.as_deref(), limit).await
+        } else {
+            db::search_favorites(&self.pool, query.trim(), format.as_deref(), limit).await
+        }
+        .map_err(database_error)?;
+
+        Ok(rows.into_iter().map(ClipboardItem::from_favorite).collect())
     }
 
     pub async fn clear_history(&self) -> Result<(), String> {
@@ -216,11 +286,13 @@ impl ClipboardSdk {
             .map_err(database_error)
     }
 
-    async fn get_row(&self, id: i64) -> Result<ClipboardItemRow, String> {
-        db::get_item(&self.pool, id)
-            .await
-            .map_err(database_error)?
-            .ok_or_else(|| "记录不存在".to_string())
+    async fn get_row(&self, source: ItemSource, id: i64) -> Result<ClipboardItemRow, String> {
+        match source {
+            ItemSource::History => db::get_item(&self.pool, id).await,
+            ItemSource::Favorite => db::get_favorite_row(&self.pool, id).await,
+        }
+        .map_err(database_error)?
+        .ok_or_else(|| "记录不存在".to_string())
     }
 }
 

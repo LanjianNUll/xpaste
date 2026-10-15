@@ -17,7 +17,7 @@ use tauri::{Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::models::{ClipboardItem, HistoryPage, HistoryPageQuery};
-use crate::sdk::ClipboardSdk;
+use crate::sdk::{ClipboardSdk, ItemSource};
 
 /// 平台无关的快捷键描述，解析自用户在设置里填写的字符串。
 ///
@@ -227,8 +227,15 @@ async fn get_history_page(
 }
 
 #[tauri::command]
-async fn set_clipboard(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    state.sdk.copy_item(id).await
+async fn set_clipboard(
+    state: State<'_, AppState>,
+    id: i64,
+    source: Option<String>,
+) -> Result<(), String> {
+    state
+        .sdk
+        .copy_item(ItemSource::parse(source.as_deref()), id)
+        .await
 }
 
 #[tauri::command]
@@ -236,8 +243,12 @@ async fn get_clipboard_image(
     state: State<'_, AppState>,
     id: i64,
     thumbnail: Option<bool>,
+    source: Option<String>,
 ) -> Result<String, String> {
-    state.sdk.image_base64(id, thumbnail.unwrap_or(false)).await
+    state
+        .sdk
+        .image_base64(ItemSource::parse(source.as_deref()), id, thumbnail.unwrap_or(false))
+        .await
 }
 
 #[tauri::command]
@@ -312,18 +323,58 @@ async fn get_category_stats(state: State<'_, AppState>) -> Result<Vec<(String, i
     state.sdk.category_stats().await
 }
 
+#[tauri::command]
+async fn toggle_favorite(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<bool, String> {
+    let favorited = state.sdk.toggle_favorite(id).await?;
+    // 复用数据变更广播：两个窗口的既有监听会各自刷新列表和星标状态。
+    let _ = tauri::Emitter::emit(&app, "clipboard://updated", ());
+    Ok(favorited)
+}
+
+#[tauri::command]
+async fn remove_favorite(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    state.sdk.remove_favorite(id).await?;
+    let _ = tauri::Emitter::emit(&app, "clipboard://updated", ());
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_favorites(
+    state: State<'_, AppState>,
+    query: Option<String>,
+    format: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<ClipboardItem>, String> {
+    state
+        .sdk
+        .list_favorites(query.as_deref().unwrap_or(""), format, limit)
+        .await
+}
+
 #[cfg(target_os = "windows")]
 #[tauri::command]
 async fn set_clipboard_and_paste(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: i64,
+    source: Option<String>,
 ) -> Result<(), String> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
     };
 
-    state.sdk.copy_item(id).await?;
+    state
+        .sdk
+        .copy_item(ItemSource::parse(source.as_deref()), id)
+        .await?;
     window_controller::hide_popup(&app)?;
     tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
     window_controller::restore_previous_window()?;
@@ -408,8 +459,12 @@ async fn set_clipboard_and_paste(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: i64,
+    source: Option<String>,
 ) -> Result<(), String> {
-    state.sdk.copy_item(id).await?;
+    state
+        .sdk
+        .copy_item(ItemSource::parse(source.as_deref()), id)
+        .await?;
 
     // 没有辅助功能权限时系统会静默丢弃合成按键，表现为"点了没反应"。
     // 这里刻意不隐藏面板：用户必须看到这条提示，才知道要去系统设置里授权。
@@ -431,8 +486,12 @@ async fn set_clipboard_and_paste(
 /// 其余平台暂不支持模拟按键，退化为仅写入剪贴板。
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 #[tauri::command]
-async fn set_clipboard_and_paste(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    set_clipboard(state, id).await
+async fn set_clipboard_and_paste(
+    state: State<'_, AppState>,
+    id: i64,
+    source: Option<String>,
+) -> Result<(), String> {
+    set_clipboard(state, id, source).await
 }
 
 #[tauri::command]
@@ -686,7 +745,10 @@ fn main() {
             delete_history_by_category,
             delete_history_by_date,
             get_format_stats,
-            get_category_stats
+            get_category_stats,
+            toggle_favorite,
+            remove_favorite,
+            list_favorites
         ])
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .run(tauri::generate_context!());

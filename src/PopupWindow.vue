@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
 import { ElMessage } from "element-plus";
-import { Search, Filter, ArrowDown } from "@element-plus/icons-vue";
-import type { ClipboardItem, DateRangeType, DateRange } from "@/types";
+import { Search, Filter, ArrowDown, Star, StarFilled } from "@element-plus/icons-vue";
+import type { ClipboardItem, DateRangeType, DateRange, ItemSource } from "@/types";
 import {
   fetchHistoryPage,
+  fetchFavorites,
   getClipboardImage,
   hidePopup,
   pasteHistoryItem,
+  toggleFavorite,
+  removeFavorite,
   subscribeClipboardUpdates,
   subscribePopupShown
 } from "@/services/api";
@@ -22,6 +25,7 @@ const activeDate = ref<DateRangeType>("today");
 const customDate = ref<Date>(new Date());
 const keyword = ref("");
 const selectedType = ref("all");
+const favoritesOnly = ref(false);
 const activeIndex = ref(-1);
 const pasting = ref(false);
 let loadRequestId = 0;
@@ -90,18 +94,22 @@ const typeLabelMap: Record<string, string> = {
 const activeFilterCount = computed(() => {
   let count = 0;
   if (selectedType.value !== "all") count += 1;
-  if (activeDate.value !== "today") count += 1;
+  if (!favoritesOnly.value && activeDate.value !== "today") count += 1;
   return count;
 });
 
 // 底部常驻摘要：筛选面板收起时也能一眼看出当前在看哪个范围
 const filterSummary = computed(() => {
   const parts: string[] = [];
-  parts.push(
-    activeDate.value === "custom"
-      ? `${customDate.value.getMonth() + 1}月${customDate.value.getDate()}日`
-      : (dateOptions.find((option) => option.value === activeDate.value)?.label ?? "今天")
-  );
+  if (favoritesOnly.value) {
+    parts.push("收藏");
+  } else {
+    parts.push(
+      activeDate.value === "custom"
+        ? `${customDate.value.getMonth() + 1}月${customDate.value.getDate()}日`
+        : (dateOptions.find((option) => option.value === activeDate.value)?.label ?? "今天")
+    );
+  }
   parts.push(typeLabelMap[selectedType.value] ?? "全部类型");
   const trimmedKeyword = keyword.value.trim();
   if (trimmedKeyword) {
@@ -118,6 +126,12 @@ function closeFilterPanel() {
   filterExpanded.value = false;
 }
 
+/** 收藏/全部切换：点亮后列表只显示收藏快照（仍支持关键词与类型筛选）。 */
+function toggleFavoritesOnly() {
+  favoritesOnly.value = !favoritesOnly.value;
+  loadHistory();
+}
+
 function selectDate(value: DateRangeType) {
   activeDate.value = value;
   loadHistory();
@@ -127,7 +141,7 @@ function selectDate(value: DateRangeType) {
 /** 打开全局全屏预览：与主界面、历史管理共用同一个组件 */
 async function openImagePreview(item: ClipboardItem) {
   try {
-    const data = await getClipboardImage(item.id, true);
+    const data = await getClipboardImage(item.id, true, currentSource());
     if (!data) {
       ElMessage.warning("图片已失效或读取失败");
       return;
@@ -169,10 +183,27 @@ function getDateRange(type: DateRangeType): DateRange {
   }
 }
 
+/** 当前列表的数据来源：收藏模式下条目 id 指向 favorites 表快照。 */
+function currentSource(): ItemSource | undefined {
+  return favoritesOnly.value ? "favorite" : undefined;
+}
+
 async function loadHistory() {
   const requestId = ++loadRequestId;
   loading.value = true;
   try {
+    if (favoritesOnly.value) {
+      const favorites = await fetchFavorites(
+        keyword.value,
+        selectedType.value === "all" ? undefined : selectedType.value
+      );
+      if (requestId === loadRequestId) {
+        items.value = favorites;
+        activeIndex.value = favorites.length > 0 ? 0 : -1;
+        scrollActiveIntoView();
+      }
+      return;
+    }
     const range = getDateRange(activeDate.value);
     const result = await fetchHistoryPage({
       startTs: range.startTs,
@@ -211,7 +242,7 @@ async function handleItemClick(item: ClipboardItem) {
   pasting.value = true;
   const searchKeyword = keyword.value.trim();
   try {
-    await pasteHistoryItem(item.id);
+    await pasteHistoryItem(item.id, currentSource());
     // 粘贴成功才说明这次搜索确实有用，此时把关键词记进历史搜索。
     recordSearchKeyword(searchKeyword);
   } catch (err) {
@@ -220,6 +251,20 @@ async function handleItemClick(item: ClipboardItem) {
     ElMessage.error(typeof err === "string" ? err : "写入剪贴板失败。");
   } finally {
     pasting.value = false;
+  }
+}
+
+/** 收藏切换：全部模式下按历史 id 切换；收藏模式下星标即取消收藏（条目移除）。 */
+async function handleToggleFavorite(item: ClipboardItem) {
+  try {
+    if (favoritesOnly.value) {
+      await removeFavorite(item.id);
+    } else {
+      await toggleFavorite(item.id);
+    }
+    await loadHistory();
+  } catch (err) {
+    ElMessage.error("收藏操作失败。");
   }
 }
 
@@ -363,6 +408,7 @@ async function handlePopupShown() {
     debounceHandle.value = null;
   }
   keyword.value = "";
+  favoritesOnly.value = false;
   historyExpanded.value = false;
   // 每次弹出都回到收起状态，保证列表拿到最大可视高度
   closeFilterPanel();
@@ -541,6 +587,19 @@ watch(customDate, () => {
       />
       <button
         type="button"
+        class="fav-toggle"
+        :class="{ 'is-active': favoritesOnly }"
+        :title="favoritesOnly ? '显示全部剪贴板内容' : '只看收藏'"
+        @click="toggleFavoritesOnly"
+      >
+        <el-icon :size="13">
+          <StarFilled v-if="favoritesOnly" />
+          <Star v-else />
+        </el-icon>
+        <span>收藏</span>
+      </button>
+      <button
+        type="button"
         class="filter-toggle"
         :class="{ 'is-active': filterExpanded, 'is-filtered': activeFilterCount > 0 }"
         :title="filterExpanded ? '收起筛选条件' : '展开类型、时间等筛选条件'"
@@ -576,7 +635,8 @@ watch(customDate, () => {
         </el-select>
       </div>
 
-      <div class="filter-row">
+      <!-- 收藏按收藏时间排序，与历史的时间范围语义不同，收藏模式下不展示时间筛选 -->
+      <div v-if="!favoritesOnly" class="filter-row">
         <span class="filter-label">时间</span>
         <div class="date-segments">
           <button
@@ -592,7 +652,7 @@ watch(customDate, () => {
         </div>
       </div>
 
-      <div v-if="activeDate === 'custom'" class="filter-row">
+      <div v-if="!favoritesOnly && activeDate === 'custom'" class="filter-row">
         <span class="filter-label">日期</span>
         <el-date-picker
           v-model="customDate"
@@ -647,7 +707,20 @@ watch(customDate, () => {
         <div class="history-meta">
           <span>{{ itemTypeLabel(item) }}</span>
           <span class="history-meta-right">
-            <span class="copy-count">× {{ item.copyCount }}</span>
+            <button
+              type="button"
+              class="fav-star-btn"
+              :class="{ 'is-favorited': item.favorited }"
+              :title="item.favorited ? '取消收藏' : '收藏'"
+              @click.stop="handleToggleFavorite(item)"
+            >
+              <el-icon :size="13">
+                <StarFilled v-if="item.favorited" />
+                <Star v-else />
+              </el-icon>
+            </button>
+            <!-- 收藏快照不参与复制计数，徽标只在全部模式下展示 -->
+            <span v-if="!favoritesOnly" class="copy-count">× {{ item.copyCount }}</span>
             <span>{{ formatTime(item.createdAt) }}</span>
             <!-- 预览入口独立成文字按钮，图片本体不再拦截点击，保证整条 item 点击即粘贴 -->
             <button
@@ -662,7 +735,7 @@ watch(customDate, () => {
           </span>
         </div>
         <div v-if="item.format === 'image'" class="history-image-preview">
-          <LazyClipboardImage :item-id="item.id" class="thumbnail" alt="预览" />
+          <LazyClipboardImage :item-id="item.id" :source="currentSource()" class="thumbnail" alt="预览" />
         </div>
         <div
           v-else
@@ -694,10 +767,10 @@ watch(customDate, () => {
   border: 1px solid var(--stroke);
 }
 
-/* 常驻工具条：只留搜索框 + 筛选 + 关闭，整体高度压到最小 */
+/* 常驻工具条：只留搜索框 + 收藏 + 筛选 + 关闭，整体高度压到最小 */
 .search-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px 26px;
+  grid-template-columns: minmax(0, 1fr) 52px 72px 26px;
   gap: 6px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--stroke);
@@ -736,6 +809,34 @@ watch(customDate, () => {
 
 .search-toolbar :deep(.el-input__wrapper) {
   min-height: 28px;
+}
+
+/* 收藏筛选开关：与筛选按钮同款观感，点亮表示当前只看收藏 */
+.fav-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.fav-toggle:hover {
+  background: var(--control-bg-hover);
+  border-color: var(--border-strong-hover);
+}
+
+.fav-toggle.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .filter-toggle {
@@ -965,13 +1066,6 @@ min-width: 14px;
 
 .popup-body .history-meta {
   margin-bottom: 4px;
-}
-
-.history-meta-right {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
 }
 
 .preview-text-btn {

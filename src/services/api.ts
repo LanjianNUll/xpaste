@@ -1,4 +1,4 @@
-import type { ClipboardItem, HistoryPage, HistoryPageQuery } from "@/types";
+import type { ClipboardItem, HistoryPage, HistoryPageQuery, ItemSource } from "@/types";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { isEnabled, enable, disable } from "@tauri-apps/plugin-autostart";
@@ -8,11 +8,14 @@ export interface ClipboardSdk {
   fetchHistory(query?: string, limit?: number): Promise<ClipboardItem[]>;
   fetchHistoryByDate(startTs: number, endTs: number, query?: string, limit?: number): Promise<ClipboardItem[]>;
   fetchHistoryPage(query: HistoryPageQuery): Promise<HistoryPage>;
-  getImage(id: number, thumbnail?: boolean): Promise<string>;
+  fetchFavorites(query?: string, format?: string, limit?: number): Promise<ClipboardItem[]>;
+  getImage(id: number, thumbnail?: boolean, source?: ItemSource): Promise<string>;
   saveText(text: string): Promise<void>;
   saveImage(imageBase64: string): Promise<void>;
-  copyItem(id: number): Promise<void>;
-  pasteItem(id: number): Promise<void>;
+  copyItem(id: number, source?: ItemSource): Promise<void>;
+  pasteItem(id: number, source?: ItemSource): Promise<void>;
+  toggleFavorite(id: number): Promise<boolean>;
+  removeFavorite(id: number): Promise<void>;
   deleteItem(id: number): Promise<void>;
   deleteItems(ids: number[]): Promise<number>;
   deleteByFormat(format: string): Promise<number>;
@@ -45,8 +48,12 @@ class TauriClipboardSdk implements ClipboardSdk {
     return await invoke<HistoryPage>("get_history_page", { query });
   }
 
-  async getImage(id: number, thumbnail = false): Promise<string> {
-    return await invoke<string>("get_clipboard_image", { id, thumbnail });
+  async fetchFavorites(query = "", format?: string, limit = 200): Promise<ClipboardItem[]> {
+    return await invoke<ClipboardItem[]>("list_favorites", { query, format, limit });
+  }
+
+  async getImage(id: number, thumbnail = false, source?: ItemSource): Promise<string> {
+    return await invoke<string>("get_clipboard_image", { id, thumbnail, source });
   }
 
   async saveText(text: string): Promise<void> {
@@ -57,12 +64,20 @@ class TauriClipboardSdk implements ClipboardSdk {
     await invoke<void>("save_clipboard_image", { imageBase64 });
   }
 
-  async copyItem(id: number): Promise<void> {
-    await invoke<void>("set_clipboard", { id });
+  async copyItem(id: number, source?: ItemSource): Promise<void> {
+    await invoke<void>("set_clipboard", { id, source });
   }
 
-  async pasteItem(id: number): Promise<void> {
-    await invoke<void>("set_clipboard_and_paste", { id });
+  async pasteItem(id: number, source?: ItemSource): Promise<void> {
+    await invoke<void>("set_clipboard_and_paste", { id, source });
+  }
+
+  async toggleFavorite(id: number): Promise<boolean> {
+    return await invoke<boolean>("toggle_favorite", { id });
+  }
+
+  async removeFavorite(id: number): Promise<void> {
+    await invoke<void>("remove_favorite", { id });
   }
 
   async deleteItem(id: number): Promise<void> {
@@ -119,11 +134,14 @@ export const clipboardSdk: ClipboardSdk = new TauriClipboardSdk();
 export const fetchHistory = clipboardSdk.fetchHistory.bind(clipboardSdk);
 export const fetchHistoryByDate = clipboardSdk.fetchHistoryByDate.bind(clipboardSdk);
 export const fetchHistoryPage = clipboardSdk.fetchHistoryPage.bind(clipboardSdk);
+export const fetchFavorites = clipboardSdk.fetchFavorites.bind(clipboardSdk);
 export const getClipboardImage = clipboardSdk.getImage.bind(clipboardSdk);
 export const saveClipboardText = clipboardSdk.saveText.bind(clipboardSdk);
 export const saveClipboardImage = clipboardSdk.saveImage.bind(clipboardSdk);
 export const setClipboard = clipboardSdk.copyItem.bind(clipboardSdk);
 export const setClipboardAndPaste = clipboardSdk.pasteItem.bind(clipboardSdk);
+export const toggleFavorite = clipboardSdk.toggleFavorite.bind(clipboardSdk);
+export const removeFavorite = clipboardSdk.removeFavorite.bind(clipboardSdk);
 export const subscribeClipboardUpdates = clipboardSdk.subscribe.bind(clipboardSdk);
 export const subscribePopupShown = clipboardSdk.subscribePopupShown.bind(clipboardSdk);
 export const hidePopup = clipboardSdk.hidePopup.bind(clipboardSdk);
@@ -132,7 +150,7 @@ export const hidePopup = clipboardSdk.hidePopup.bind(clipboardSdk);
  * 快捷窗口场景下选中条目：仅当快捷窗口当前可见时才写入剪贴板并模拟 Ctrl+V。
  * 若窗口已隐藏（例如从主窗口调用），则退化为仅写入剪贴板，避免误粘贴到其他应用。
  */
-export async function pasteHistoryItem(id: number): Promise<void> {
+export async function pasteHistoryItem(id: number, source?: ItemSource): Promise<void> {
   let visible = true;
   try {
     const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
@@ -141,9 +159,9 @@ export async function pasteHistoryItem(id: number): Promise<void> {
     visible = true;
   }
   if (visible) {
-    await clipboardSdk.pasteItem(id);
+    await clipboardSdk.pasteItem(id, source);
   } else {
-    await clipboardSdk.copyItem(id);
+    await clipboardSdk.copyItem(id, source);
   }
 }
 

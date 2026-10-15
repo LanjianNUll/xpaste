@@ -13,7 +13,8 @@ import {
   deleteHistoryByCategory,
   getFormatStats,
   getCategoryStats,
-  getClipboardImage
+  getClipboardImage,
+  toggleFavorite
 } from "@/services/api";
 import { openImageViewer } from "@/services/imageViewer";
 import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
@@ -229,6 +230,17 @@ async function openLink(item: ClipboardItem) {
   } catch (err) {
     console.error("打开链接失败:", err);
     ElMessage.error("打开链接失败");
+  }
+}
+
+/** 收藏切换：后端广播会同步其它窗口，这里刷新表格拿到最新的收藏标记。 */
+async function handleToggleFavorite(item: ClipboardItem) {
+  try {
+    const favorited = await toggleFavorite(item.id);
+    ElMessage.success(favorited ? "已收藏" : "已取消收藏");
+    await loadHistory();
+  } catch (err) {
+    ElMessage.error("收藏操作失败");
   }
 }
 
@@ -522,11 +534,19 @@ watch(() => filters.value.customDateRange, () => {
         </template>
       </el-table-column>
       
-      <el-table-column label="操作" width="100" fixed="right">
+      <el-table-column label="操作" width="140" fixed="right">
         <template #default="{ row }">
-          <el-button 
-            type="danger" 
-            size="small" 
+          <el-button
+            type="primary"
+            size="small"
+            link
+            @click="handleToggleFavorite(row)"
+          >
+            {{ row.favorited ? "取消收藏" : "收藏" }}
+          </el-button>
+          <el-button
+            type="danger"
+            size="small"
             @click="handleDeleteItem(row)"
             link
           >
