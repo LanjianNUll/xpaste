@@ -76,7 +76,10 @@ pub struct HistoryPage {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryPageQuery {
+    /// 缺省视为不限时间：快捷面板的全局搜索就是靠不传这两个字段实现的。
+    #[serde(default)]
     pub start_ts: Option<i64>,
+    #[serde(default)]
     pub end_ts: Option<i64>,
     #[serde(default)]
     pub keyword: String,

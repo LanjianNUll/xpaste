@@ -46,6 +46,12 @@ const formatLabel: Record<ClipboardItem["format"], string> = {
   color: "颜色"
 };
 
+/**
+ * 是否处于「全局搜索」：有关键词时忽略时间范围，跨全部历史检索。
+ * 快捷面板的核心诉求——搜东西不该先切时间。
+ */
+const isGlobalSearch = computed(() => keyword.value.trim().length > 0);
+
 const debounceHandle = ref<number | null>(null);
 const unlistenHandle = ref<(() => void) | null>(null);
 const unlistenFocusHandle = ref<(() => void) | null>(null);
@@ -94,15 +100,20 @@ const typeLabelMap: Record<string, string> = {
 const activeFilterCount = computed(() => {
   let count = 0;
   if (selectedType.value !== "all") count += 1;
-  if (!favoritesOnly.value && activeDate.value !== "today") count += 1;
+  // 全局搜索下时间范围不生效，不计入角标，避免给出"筛过了"的错误暗示
+  if (!favoritesOnly.value && !isGlobalSearch.value && activeDate.value !== "today") count += 1;
   return count;
 });
 
 // 底部常驻摘要：筛选面板收起时也能一眼看出当前在看哪个范围
 const filterSummary = computed(() => {
   const parts: string[] = [];
+  const trimmedKeyword = keyword.value.trim();
   if (favoritesOnly.value) {
     parts.push("收藏");
+  } else if (isGlobalSearch.value) {
+    // 有关键词时就是全局检索，时间范围不参与，摘要不要再显示"今天"误导用户
+    parts.push("全部时间");
   } else {
     parts.push(
       activeDate.value === "custom"
@@ -111,7 +122,6 @@ const filterSummary = computed(() => {
     );
   }
   parts.push(typeLabelMap[selectedType.value] ?? "全部类型");
-  const trimmedKeyword = keyword.value.trim();
   if (trimmedKeyword) {
     parts.push(`包含“${trimmedKeyword}”`);
   }
@@ -204,11 +214,13 @@ async function loadHistory() {
       }
       return;
     }
-    const range = getDateRange(activeDate.value);
+    // 有关键词时走全局搜索：不带 startTs/endTs，由后端跨全部历史按时间倒序返回。
+    // 没有关键词时才按当前选中的时间段收窄范围。
+    const range = isGlobalSearch.value ? null : getDateRange(activeDate.value);
     const result = await fetchHistoryPage({
-      startTs: range.startTs,
-      endTs: range.endTs,
-      keyword: keyword.value,
+      startTs: range?.startTs,
+      endTs: range?.endTs,
+      keyword: keyword.value.trim(),
       formats: selectedType.value === "all" ? [] : [selectedType.value],
       categories: [],
       page: 1,
@@ -592,11 +604,10 @@ watch(customDate, () => {
         :title="favoritesOnly ? '显示全部剪贴板内容' : '只看收藏'"
         @click="toggleFavoritesOnly"
       >
-        <el-icon :size="13">
+        <el-icon :size="14">
           <StarFilled v-if="favoritesOnly" />
           <Star v-else />
         </el-icon>
-        <span>收藏</span>
       </button>
       <button
         type="button"
@@ -605,8 +616,7 @@ watch(customDate, () => {
         :title="filterExpanded ? '收起筛选条件' : '展开类型、时间等筛选条件'"
         @click="toggleFilterPanel"
       >
-        <el-icon><Filter /></el-icon>
-        <span>筛选</span>
+        <el-icon :size="14"><Filter /></el-icon>
         <span v-if="activeFilterCount > 0" class="filter-badge">{{ activeFilterCount }}</span>
         <el-icon class="filter-arrow" :class="{ 'is-open': filterExpanded }"><ArrowDown /></el-icon>
       </button>
@@ -636,7 +646,7 @@ watch(customDate, () => {
       </div>
 
       <!-- 收藏按收藏时间排序，与历史的时间范围语义不同，收藏模式下不展示时间筛选 -->
-      <div v-if="!favoritesOnly" class="filter-row">
+      <div v-if="!favoritesOnly" class="filter-row" :class="{ 'is-disabled': isGlobalSearch }">
         <span class="filter-label">时间</span>
         <div class="date-segments">
           <button
@@ -645,6 +655,7 @@ watch(customDate, () => {
             type="button"
             class="date-segment"
             :class="{ 'is-active': activeDate === option.value }"
+            :disabled="isGlobalSearch"
             @click="selectDate(option.value)"
           >
             {{ option.label }}
@@ -652,7 +663,12 @@ watch(customDate, () => {
         </div>
       </div>
 
-      <div v-if="!favoritesOnly && activeDate === 'custom'" class="filter-row">
+      <!-- 全局搜索提示：避免用户以为搜不到是时间范围选错了 -->
+      <p v-if="isGlobalSearch" class="filter-hint">
+        搜索已作用于全部历史记录，结果按时间倒序排列，清空搜索词可恢复按时间浏览。
+      </p>
+
+      <div v-if="!favoritesOnly && activeDate === 'custom' && !isGlobalSearch" class="filter-row">
         <span class="filter-label">日期</span>
         <el-date-picker
           v-model="customDate"
@@ -767,10 +783,11 @@ watch(customDate, () => {
   border: 1px solid var(--stroke);
 }
 
-/* 常驻工具条：只留搜索框 + 收藏 + 筛选 + 关闭，整体高度压到最小 */
+/* 常驻工具条：只留搜索框 + 收藏 + 筛选 + 关闭，整体高度压到最小。
+   收藏/筛选只保留图标（文字放进 title），避免按钮内文字换行把工具条撑高。 */
 .search-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 52px 72px 26px;
+  grid-template-columns: minmax(0, 1fr) 28px 46px 26px;
   gap: 6px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--stroke);
@@ -816,14 +833,12 @@ watch(customDate, () => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 3px;
   height: 28px;
-  padding: 0 6px;
+  padding: 0;
   border: 1px solid var(--stroke-strong);
   border-radius: var(--radius-sm);
   background: var(--control-bg);
   color: var(--text);
-  font-size: 12px;
   line-height: 1;
   cursor: pointer;
 }
@@ -843,14 +858,13 @@ watch(customDate, () => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 2px;
   height: 28px;
-  padding: 0 6px;
+  padding: 0 4px;
   border: 1px solid var(--stroke-strong);
   border-radius: var(--radius-sm);
   background: var(--control-bg);
   color: var(--text);
-  font-size: 12px;
   line-height: 1;
   cursor: pointer;
 }
@@ -957,6 +971,26 @@ min-width: 14px;
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-contrast);
+}
+
+/* 全局搜索时时间维度不参与筛选，整行置灰但仍可点击（保留用户已选的时间） */
+.filter-row.is-disabled .filter-label,
+.filter-row.is-disabled .date-segment {
+  opacity: 0.45;
+}
+
+.filter-row.is-disabled .date-segment {
+  cursor: not-allowed;
+}
+
+.filter-hint {
+  margin: 0;
+  padding: 4px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--selection-bg);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .filter-history {
