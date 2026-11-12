@@ -14,6 +14,14 @@ export interface ClipboardSdk {
   saveImage(imageBase64: string): Promise<void>;
   copyItem(id: number, source?: ItemSource): Promise<void>;
   pasteItem(id: number, source?: ItemSource): Promise<void>;
+  /** 把任意文本投递到原应用（编辑器送出）。 */
+  pasteText(text: string): Promise<void>;
+  /** 只把任意文本写进剪贴板，不模拟按键。 */
+  copyText(text: string): Promise<void>;
+  /** 取一条记录的完整文本（列表返回的是 4096 字符截断版）。 */
+  getItemText(id: number, source?: ItemSource): Promise<string>;
+  /** 切换快捷面板尺寸并重新贴回鼠标位置。 */
+  resizePopup(width: number, height: number): Promise<void>;
   toggleFavorite(id: number): Promise<boolean>;
   removeFavorite(id: number): Promise<void>;
   deleteItem(id: number): Promise<void>;
@@ -82,6 +90,22 @@ class TauriClipboardSdk implements ClipboardSdk {
 
   async pasteItem(id: number, source?: ItemSource): Promise<void> {
     await invoke<void>("set_clipboard_and_paste", { id, source });
+  }
+
+  async pasteText(text: string): Promise<void> {
+    await invoke<void>("paste_text", { text });
+  }
+
+  async copyText(text: string): Promise<void> {
+    await invoke<void>("copy_text", { text });
+  }
+
+  async getItemText(id: number, source?: ItemSource): Promise<string> {
+    return await invoke<string>("get_item_text", { id, source });
+  }
+
+  async resizePopup(width: number, height: number): Promise<void> {
+    await invoke<void>("resize_popup", { width, height });
   }
 
   async toggleFavorite(id: number): Promise<boolean> {
@@ -178,6 +202,10 @@ export const saveClipboardText = clipboardSdk.saveText.bind(clipboardSdk);
 export const saveClipboardImage = clipboardSdk.saveImage.bind(clipboardSdk);
 export const setClipboard = clipboardSdk.copyItem.bind(clipboardSdk);
 export const setClipboardAndPaste = clipboardSdk.pasteItem.bind(clipboardSdk);
+export const pasteText = clipboardSdk.pasteText.bind(clipboardSdk);
+export const copyText = clipboardSdk.copyText.bind(clipboardSdk);
+export const getItemText = clipboardSdk.getItemText.bind(clipboardSdk);
+export const resizePopup = clipboardSdk.resizePopup.bind(clipboardSdk);
 export const toggleFavorite = clipboardSdk.toggleFavorite.bind(clipboardSdk);
 export const removeFavorite = clipboardSdk.removeFavorite.bind(clipboardSdk);
 export const subscribeClipboardUpdates = clipboardSdk.subscribe.bind(clipboardSdk);

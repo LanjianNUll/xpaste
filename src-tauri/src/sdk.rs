@@ -195,6 +195,21 @@ impl ClipboardSdk {
         write_to_clipboard(row).map_err(|err| format!("写入剪贴板失败：{err}"))
     }
 
+    /// 取一条记录的完整文本，供编辑器插入素材使用。
+    ///
+    /// 列表查询为了控制传输量会把 text/html 截到 4096 字符（见 db.rs 的
+    /// `substr(text, 1, 4096)`）。编辑器是唯一需要原文的地方，因此这里按 id
+    /// 重新读整行，避免把长文静默插成半截。
+    pub async fn item_text(&self, source: ItemSource, id: i64) -> Result<String, String> {
+        let row = self.get_row(source, id).await?;
+        Ok(row
+            .text
+            .or(row.html)
+            .or(row.file_path)
+            .or(row.color)
+            .unwrap_or_default())
+    }
+
     /// 收藏切换：已收藏则取消（返回 false），否则把历史条目整行快照进收藏表（返回 true）。
     pub async fn toggle_favorite(&self, id: i64) -> Result<bool, String> {
         let (content_hash, created_at) = db::get_item_favorite_source(&self.pool, id)

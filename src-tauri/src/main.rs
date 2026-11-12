@@ -359,23 +359,17 @@ async fn list_favorites(
         .await
 }
 
+/// Windows：隐藏面板 → 把焦点还给呼出面板前的窗口 → 模拟 Ctrl+V。
+///
+/// 抽成独立函数是因为内容来源有两条：历史记录（按 id 复制）和编辑器里的
+/// 任意文本。投递这一段完全一致，差别只在往剪贴板里塞什么。
 #[cfg(target_os = "windows")]
-#[tauri::command]
-async fn set_clipboard_and_paste(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    id: i64,
-    source: Option<String>,
-) -> Result<(), String> {
+async fn deliver_to_frontmost(app: &tauri::AppHandle) -> Result<(), String> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
     };
 
-    state
-        .sdk
-        .copy_item(ItemSource::parse(source.as_deref()), id)
-        .await?;
-    window_controller::hide_popup(&app)?;
+    window_controller::hide_popup(app)?;
     tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
     window_controller::restore_previous_window()?;
 
@@ -454,18 +448,7 @@ async fn set_clipboard_and_paste(
 /// `hide()`：它会把整个应用藏起来，系统随即把焦点还给上一次的前台应用，
 /// 之后合成的 ⌘V 才会落进用户原本的输入框而不是我们自己。
 #[cfg(target_os = "macos")]
-#[tauri::command]
-async fn set_clipboard_and_paste(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    id: i64,
-    source: Option<String>,
-) -> Result<(), String> {
-    state
-        .sdk
-        .copy_item(ItemSource::parse(source.as_deref()), id)
-        .await?;
-
+async fn deliver_to_frontmost(app: &tauri::AppHandle) -> Result<(), String> {
     // 没有辅助功能权限时系统会静默丢弃合成按键，表现为"点了没反应"。
     // 这里刻意不隐藏面板：用户必须看到这条提示，才知道要去系统设置里授权。
     // 内容已经进了剪贴板，此时手动按 ⌘V 依然可用。
@@ -484,7 +467,7 @@ async fn set_clipboard_and_paste(
         macos::frontmost_window_owner_pid()
     ));
 
-    let _ = window_controller::hide_popup(&app);
+    let _ = window_controller::hide_popup(app);
     let _ = app.hide();
 
     // 焦点必须真的交还出去，合成的 ⌘V 才会落进用户原本的输入框。
@@ -519,20 +502,71 @@ async fn set_clipboard_and_paste(
     result
 }
 
-/// 其余平台暂不支持模拟按键，退化为仅写入剪贴板。
+/// 其余平台暂不支持模拟按键，退化为写入剪贴板并收起面板。
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+async fn deliver_to_frontmost(app: &tauri::AppHandle) -> Result<(), String> {
+    window_controller::hide_popup(app)
+}
+
+/// 把一条历史记录写进剪贴板，再投递到用户原本所在的窗口。
 #[tauri::command]
 async fn set_clipboard_and_paste(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: i64,
     source: Option<String>,
 ) -> Result<(), String> {
-    set_clipboard(state, id, source).await
+    state
+        .sdk
+        .copy_item(ItemSource::parse(source.as_deref()), id)
+        .await?;
+    deliver_to_frontmost(&app).await
+}
+
+/// 把任意文本写进系统剪贴板（编辑器送出时用，不经过历史记录）。
+fn write_text_to_clipboard(text: &str) -> Result<(), String> {
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|err| format!("写入剪贴板失败：{err}"))?;
+    clipboard
+        .set_text(text.to_string())
+        .map_err(|err| format!("写入剪贴板失败：{err}"))
+}
+
+/// 编辑器送出：写入任意文本 → 投递到原应用。
+#[tauri::command]
+async fn paste_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    write_text_to_clipboard(&text)?;
+    deliver_to_frontmost(&app).await
+}
+
+/// 编辑器「仅复制」：只写剪贴板，不模拟按键，也不收起面板。
+#[tauri::command]
+fn copy_text(text: String) -> Result<(), String> {
+    write_text_to_clipboard(&text)
+}
+
+/// 取一条记录的完整文本。列表返回的是截断版，编辑器插入素材时必须拿原文。
+#[tauri::command]
+async fn get_item_text(
+    state: State<'_, AppState>,
+    id: i64,
+    source: Option<String>,
+) -> Result<String, String> {
+    state
+        .sdk
+        .item_text(ItemSource::parse(source.as_deref()), id)
+        .await
 }
 
 #[tauri::command]
 fn hide_popup(app: tauri::AppHandle) -> Result<(), String> {
     window_controller::hide_popup(&app)
+}
+
+/// 切换面板尺寸（列表态 ⇄ 编辑态），并重新贴回鼠标位置。
+#[tauri::command]
+async fn resize_popup(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+    window_controller::resize_popup(&app, width, height).await
 }
 
 #[tauri::command]
@@ -971,6 +1005,10 @@ fn main() {
             get_history_page,
             set_clipboard,
             set_clipboard_and_paste,
+            paste_text,
+            copy_text,
+            get_item_text,
+            resize_popup,
             get_clipboard_image,
             save_clipboard_text,
             save_clipboard_image,

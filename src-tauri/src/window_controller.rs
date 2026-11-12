@@ -50,6 +50,47 @@ pub fn toggle_popup(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 调整快捷面板尺寸，并重新贴近鼠标。
+///
+/// 面板在列表态和编辑态之间切换时要换尺寸（列表 360×500、编辑约 760×560）。
+/// 尺寸一变，原先贴着鼠标的位置就可能越界或者跑到屏幕外，所以这里先 resize
+/// 再按新外框重算位置。
+///
+/// 关键点：macOS 上 tao 的 `set_size` 走的是
+/// `DispatchQueue::main().exec_async { setContentSize }`，也就是异步派发。
+/// 命令返回时窗口还是旧尺寸，此时读 `outer_size()` 算出来的位置是按旧宽度，
+/// 窗口放大后就会顶出屏幕。因此这里轮询等外框真的变了再定位；Windows 的 DPI
+/// 换算也有类似的一帧延迟，同一段逻辑一并覆盖。
+pub async fn resize_popup(app: &AppHandle, width: f64, height: f64) -> Result<(), String> {
+    let window = app
+        .get_webview_window("popup")
+        .ok_or_else(|| "快捷窗口不存在".to_string())?;
+    window
+        .set_size(tauri::LogicalSize::new(width, height))
+        .map_err(|error| error.to_string())?;
+
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    for _ in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        if let Ok(size) = window.outer_size() {
+            let applied_width = f64::from(size.width) / scale;
+            let applied_height = f64::from(size.height) / scale;
+            if (applied_width - width).abs() < 2.0 && (applied_height - height).abs() < 2.0 {
+                break;
+            }
+        }
+    }
+
+    let (x, y) = popup_position(&window);
+    apply_popup_position(&window, x, y)?;
+    let (corrected_x, corrected_y) = popup_position(&window);
+    if (corrected_x, corrected_y) != (x, y) {
+        apply_popup_position(&window, corrected_x, corrected_y)?;
+    }
+    Ok(())
+}
+
 pub fn hide_popup(app: &AppHandle) -> Result<(), String> {
     app.get_webview_window("popup")
         .ok_or_else(|| "快捷窗口不存在".to_string())?

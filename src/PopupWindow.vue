@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Search, Filter, ArrowDown, Star, StarFilled } from "@element-plus/icons-vue";
+import { Search, Filter, ArrowDown, Star, StarFilled, EditPen } from "@element-plus/icons-vue";
 import type { ClipboardItem, DateRangeType, DateRange, ItemSource } from "@/types";
 import {
   fetchHistoryPage,
   fetchFavorites,
   getClipboardImage,
+  getItemText,
   hidePopup,
   pasteHistoryItem,
+  pasteText,
+  copyText,
+  resizePopup,
+  saveClipboardText,
   toggleFavorite,
   removeFavorite,
   subscribeClipboardUpdates,
@@ -31,6 +36,27 @@ const favoritesOnly = ref(false);
 const activeIndex = ref(-1);
 const pasting = ref(false);
 let loadRequestId = 0;
+
+/**
+ * 面板的两种形态：
+ * - list：默认态，360×500，点条目直接粘贴，追求最快
+ * - edit：编辑态，约 760×560，左素材右编辑，改完再投递
+ * 两者共用同一个窗口，切换时靠 resize_popup 换尺寸并重新贴回鼠标。
+ */
+const mode = ref<"list" | "edit">("list");
+const draft = ref("");
+const editorRef = ref<HTMLTextAreaElement | null>(null);
+const selectedIds = ref<number[]>([]);
+const drawerOpen = ref(false);
+const viewportWidth = ref(window.innerWidth);
+/** 窄窗口下左栏折叠成抽屉，对应方案 A 的退化形态 */
+const narrow = computed(() => viewportWidth.value < 620);
+
+const DRAFT_KEY = "xpaste.composeDraft";
+const LIST_SIZE = { width: 360, height: 500 };
+const EDIT_SIZE = { width: 760, height: 560 };
+/** 后端列表把 text 截到 4096 字符，到达这个长度就得回源取全文 */
+const TEXT_TRUNCATE_LIMIT = 4096;
 
 const categoryLabel: Record<ClipboardItem["category"], string> = {
   link: "链接",
@@ -252,6 +278,11 @@ function scheduleLoad() {
 }
 
 async function handleItemClick(item: ClipboardItem) {
+  // 编辑态下点列表条目 = 插入素材，而不是直接粘贴
+  if (mode.value === "edit") {
+    await insertItem(item);
+    return;
+  }
   if (pasting.value) return;
   pasting.value = true;
   const searchKeyword = keyword.value.trim();
@@ -450,6 +481,20 @@ async function handlePopupShown() {
     window.clearTimeout(debounceHandle.value);
     debounceHandle.value = null;
   }
+
+  // 上次可能是编辑态被粘贴/关闭隐藏的。重新弹出时先回到列表形态，
+  // 否则窗口会留在加宽尺寸上，位置也和鼠标对不上。
+  if (mode.value === "edit") {
+    mode.value = "list";
+    selectedIds.value = [];
+    drawerOpen.value = false;
+    try {
+      await resizePopup(LIST_SIZE.width, LIST_SIZE.height);
+    } catch {
+      // 尺寸没恢复也不影响列表使用
+    }
+  }
+
   keyword.value = "";
   favoritesOnly.value = false;
   historyExpanded.value = false;
@@ -498,9 +543,219 @@ async function confirmSelection() {
   await handleItemClick(item);
 }
 
+// ── 编辑态：选素材 → 改 → 投递 ───────────────────────────────────────────
+
+function persistDraft() {
+  try {
+    window.localStorage.setItem(DRAFT_KEY, draft.value);
+  } catch {
+    // 存不下就只在内存里保留，不打断编辑
+  }
+}
+
+function loadDraft() {
+  try {
+    draft.value = window.localStorage.getItem(DRAFT_KEY) ?? "";
+  } catch {
+    draft.value = "";
+  }
+}
+
+function focusEditorAtEnd() {
+  const el = editorRef.value;
+  if (!el) return;
+  el.focus();
+  const end = draft.value.length;
+  el.setSelectionRange(end, end);
+}
+
+/** 图片没有可编辑的文本形态，其余格式都能落到一段文字上 */
+function isEditableItem(item: ClipboardItem) {
+  return item.format !== "image";
+}
+
+/**
+ * 取条目的完整文本。
+ * 列表查询为了省流量把 text 截在 4096 字符，长文直接插入会静默变成半截，
+ * 因此到达阈值时按 id 回源读整行。
+ */
+async function fullItemText(item: ClipboardItem): Promise<string> {
+  const inline = item.text ?? item.html ?? item.color ?? item.filePath ?? "";
+  if (inline.length < TEXT_TRUNCATE_LIMIT) return inline;
+  try {
+    return await getItemText(item.id, currentSource());
+  } catch {
+    return inline;
+  }
+}
+
+/** 在光标处插入一段文本，前后各补一个换行，避免和已有内容粘在一起 */
+function appendSnippet(text: string) {
+  if (!text) return;
+  const el = editorRef.value;
+  const current = draft.value;
+  const start = el?.selectionStart ?? current.length;
+  const end = el?.selectionEnd ?? start;
+  const before = current.slice(0, start);
+  const after = current.slice(end);
+  const lead = before.length > 0 && !before.endsWith("\n") ? "\n" : "";
+  const tail = after.length > 0 && !after.startsWith("\n") ? "\n" : "";
+  const inserted = `${lead}${text}${tail}`;
+
+  draft.value = `${before}${inserted}${after}`;
+  persistDraft();
+
+  const caret = before.length + inserted.length;
+  void nextTick(() => {
+    const target = editorRef.value;
+    if (!target) return;
+    target.focus();
+    target.setSelectionRange(caret, caret);
+  });
+}
+
+async function insertItem(item: ClipboardItem) {
+  if (!isEditableItem(item)) {
+    ElMessage.info("图片暂不支持插入编辑器");
+    return;
+  }
+  appendSnippet(await fullItemText(item));
+  drawerOpen.value = false;
+}
+
+function toggleSelected(id: number) {
+  selectedIds.value = selectedIds.value.includes(id)
+    ? selectedIds.value.filter((entry) => entry !== id)
+    : [...selectedIds.value, id];
+}
+
+/** 按列表顺序拼接所选条目，中间空一行，方便再手动分条 */
+async function insertSelected() {
+  const chosen = items.value.filter((item) => selectedIds.value.includes(item.id));
+  if (chosen.length === 0) return;
+  const parts: string[] = [];
+  for (const item of chosen) {
+    if (!isEditableItem(item)) continue;
+    parts.push(await fullItemText(item));
+  }
+  if (parts.length === 0) return;
+  appendSnippet(parts.join("\n\n"));
+  selectedIds.value = [];
+}
+
+async function enterEditMode() {
+  if (mode.value === "edit") return;
+  mode.value = "edit";
+  selectedIds.value = [];
+  drawerOpen.value = false;
+
+  // 双栏尽量给够宽度，但别超出屏幕；小屏自动退化为单栏（narrow 由宽度判定）
+  const width = Math.max(420, Math.min(EDIT_SIZE.width, window.screen.availWidth - 48));
+  const height = Math.max(360, Math.min(EDIT_SIZE.height, window.screen.availHeight - 96));
+  try {
+    await resizePopup(width, height);
+  } catch {
+    // 尺寸没换成也能编辑，只是空间局促
+  }
+
+  await nextTick();
+  focusEditorAtEnd();
+}
+
+async function exitEditMode() {
+  if (mode.value !== "edit") return;
+  mode.value = "list";
+  selectedIds.value = [];
+  drawerOpen.value = false;
+  try {
+    await resizePopup(LIST_SIZE.width, LIST_SIZE.height);
+  } catch {
+    // 同上：尺寸失败不影响返回列表
+  }
+  await nextTick();
+  focusSearchInput();
+  loadHistory();
+}
+
+function clearDraft() {
+  if (!draft.value) return;
+  draft.value = "";
+  persistDraft();
+  focusEditorAtEnd();
+}
+
+async function submitDraft(action: "paste" | "copy" | "save") {
+  if (pasting.value) return;
+  const text = draft.value;
+  if (!text.trim()) {
+    ElMessage.warning("编辑区还是空的");
+    return;
+  }
+
+  pasting.value = true;
+  try {
+    if (action === "paste") {
+      await pasteText(text);
+    } else if (action === "copy") {
+      await copyText(text);
+      ElMessage.success("已复制到剪贴板");
+      focusEditorAtEnd();
+    } else {
+      await saveClipboardText(text);
+      ElMessage.success("已存为剪贴板记录");
+      loadHistory();
+    }
+  } catch (err) {
+    const message = typeof err === "string" ? err : "操作失败。";
+    if (message.includes("辅助功能")) {
+      void guideToAccessibility();
+    } else {
+      ElMessage.error(message);
+    }
+  } finally {
+    pasting.value = false;
+  }
+}
+
+function handleViewportResize() {
+  viewportWidth.value = window.innerWidth;
+}
+
 function handleKeydown(event: KeyboardEvent) {
   const key = event.key;
   const isComposing = (event as KeyboardEvent & { isComposing?: boolean }).isComposing;
+  const withMeta = event.metaKey || event.ctrlKey;
+
+  // 编辑态：除了三个功能键，其余全部交给 textarea（方向键、回车、⌘C 都不能抢）
+  if (mode.value === "edit") {
+    if (key === "Escape") {
+      event.preventDefault();
+      if (drawerOpen.value) {
+        drawerOpen.value = false;
+        return;
+      }
+      exitEditMode().catch(() => undefined);
+      return;
+    }
+    if (withMeta && key === "Enter") {
+      event.preventDefault();
+      submitDraft("paste").catch(() => undefined);
+      return;
+    }
+    if (withMeta && key.toLowerCase() === "e") {
+      event.preventDefault();
+      exitEditMode().catch(() => undefined);
+      return;
+    }
+    return;
+  }
+
+  // 列表态：⌘E 进入编辑态，编辑区保留上次未发出去的草稿
+  if (withMeta && key.toLowerCase() === "e") {
+    event.preventDefault();
+    enterEditMode().catch(() => undefined);
+    return;
+  }
 
   if (key === "Escape") {
     event.preventDefault();
@@ -552,6 +807,8 @@ function handleKeydown(event: KeyboardEvent) {
 
 onMounted(async () => {
   loadSearchHistory();
+  loadDraft();
+  handleViewportResize();
   await loadHistory();
   
   // 监听剪贴板更新事件
@@ -577,6 +834,7 @@ onMounted(async () => {
   
   window.addEventListener("blur", handleWindowBlur);
   window.addEventListener("keydown", handleKeydown);
+  window.addEventListener("resize", handleViewportResize);
   
   // 监听窗口显示事件，滚动到顶部
   try {
@@ -605,6 +863,7 @@ onBeforeUnmount(() => {
   }
   window.removeEventListener("blur", handleWindowBlur);
   window.removeEventListener("keydown", handleKeydown);
+  window.removeEventListener("resize", handleViewportResize);
 });
 
 watch(customDate, () => {
@@ -615,47 +874,151 @@ watch(customDate, () => {
 </script>
 
 <template>
-  <div class="popup-shell">
+  <div class="popup-shell" :class="{ 'is-editing': mode === 'edit' }">
     <AmbientLayer />
     <!-- 无系统边框的浮层：这条工具条同时充当拖拽区（点空白处可移动窗口） -->
     <div class="search-toolbar" data-tauri-drag-region>
       <el-input
+        v-if="mode === 'list'"
         ref="searchInputRef"
         v-model="keyword"
+        class="toolbar-search"
         :prefix-icon="Search"
         placeholder="搜索剪贴板内容"
         size="small"
         clearable
         @input="scheduleLoad"
       />
+      <span v-else class="compose-heading">
+        编辑
+        <span class="compose-count">{{ draft.length }} 字</span>
+      </span>
+
+      <template v-if="mode === 'list'">
+        <button
+          type="button"
+          class="fav-toggle"
+          :class="{ 'is-active': favoritesOnly }"
+          :title="favoritesOnly ? '显示全部剪贴板内容' : '只看收藏'"
+          @click="toggleFavoritesOnly"
+        >
+          <el-icon :size="14">
+            <StarFilled v-if="favoritesOnly" />
+            <Star v-else />
+          </el-icon>
+        </button>
+        <button
+          type="button"
+          class="filter-toggle"
+          :class="{ 'is-active': filterExpanded, 'is-filtered': activeFilterCount > 0 }"
+          :title="filterExpanded ? '收起筛选条件' : '展开类型、时间等筛选条件'"
+          @click="toggleFilterPanel"
+        >
+          <el-icon :size="14"><Filter /></el-icon>
+          <span v-if="activeFilterCount > 0" class="filter-badge">{{ activeFilterCount }}</span>
+          <el-icon class="filter-arrow" :class="{ 'is-open': filterExpanded }"><ArrowDown /></el-icon>
+        </button>
+        <button
+          type="button"
+          class="edit-toggle"
+          title="编辑剪贴板内容（⌘E）"
+          @click="enterEditMode"
+        >
+          <el-icon :size="14"><EditPen /></el-icon>
+        </button>
+      </template>
+
       <button
+        v-else-if="narrow"
         type="button"
-        class="fav-toggle"
-        :class="{ 'is-active': favoritesOnly }"
-        :title="favoritesOnly ? '显示全部剪贴板内容' : '只看收藏'"
-        @click="toggleFavoritesOnly"
+        class="compose-drawer-toggle"
+        :class="{ 'is-active': drawerOpen }"
+        title="插入剪贴板素材"
+        @click="drawerOpen = !drawerOpen"
       >
-        <el-icon :size="14">
-          <StarFilled v-if="favoritesOnly" />
-          <Star v-else />
-        </el-icon>
+        素材
       </button>
-      <button
-        type="button"
-        class="filter-toggle"
-        :class="{ 'is-active': filterExpanded, 'is-filtered': activeFilterCount > 0 }"
-        :title="filterExpanded ? '收起筛选条件' : '展开类型、时间等筛选条件'"
-        @click="toggleFilterPanel"
-      >
-        <el-icon :size="14"><Filter /></el-icon>
-        <span v-if="activeFilterCount > 0" class="filter-badge">{{ activeFilterCount }}</span>
-        <el-icon class="filter-arrow" :class="{ 'is-open': filterExpanded }"><ArrowDown /></el-icon>
-      </button>
+
       <button type="button" class="popup-close" title="关闭（Esc）" @click="handleCloseClick">
         <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0L0 10" /></svg>
       </button>
     </div>
 
+    <!-- 编辑态：左素材、右编辑。窄窗口时左栏变抽屉，退化为单栏 -->
+    <div v-if="mode === 'edit'" class="compose-body">
+      <aside class="compose-list" :class="{ 'is-narrow': narrow, 'is-open': drawerOpen }">
+        <div class="compose-list-head">
+          <span>素材 · {{ items.length }} 条</span>
+          <button
+            v-if="selectedIds.length > 0"
+            type="button"
+            class="compose-insert-selected"
+            @click="insertSelected"
+          >
+            插入所选 {{ selectedIds.length }}
+          </button>
+        </div>
+        <!-- 编辑过程中还要找别的素材，搜索框得留在这里，否则只能退回列表重搜 -->
+        <div class="compose-search-row">
+          <input
+            v-model="keyword"
+            class="compose-search"
+            type="text"
+            placeholder="筛选素材"
+            @input="scheduleLoad"
+          />
+        </div>
+        <div class="compose-list-body">
+          <div
+            v-for="item in items"
+            :key="item.id"
+            class="compose-source"
+            :class="{ 'is-checked': selectedIds.includes(item.id), 'is-disabled': item.format === 'image' }"
+          >
+            <button
+              type="button"
+              class="compose-check"
+              :class="{ 'is-on': selectedIds.includes(item.id) }"
+              :disabled="item.format === 'image'"
+              :title="selectedIds.includes(item.id) ? '取消选择' : '选择后可批量插入'"
+              @click.stop="toggleSelected(item.id)"
+            ></button>
+            <button type="button" class="compose-source-text" @click="insertItem(item)">
+              <span class="compose-source-preview">{{ shortPreview(item) }}</span>
+              <span class="compose-source-meta">{{ itemTypeLabel(item) }} · {{ formatTime(item.createdAt) }}</span>
+            </button>
+          </div>
+          <p v-if="!loading && items.length === 0" class="compose-empty">没有可插入的内容</p>
+        </div>
+      </aside>
+
+      <section class="compose-editor">
+        <textarea
+          ref="editorRef"
+          v-model="draft"
+          class="compose-textarea"
+          spellcheck="false"
+          placeholder="从左侧点素材插入，或直接在这里写。⌘↵ 粘贴到当前应用。"
+          @input="persistDraft"
+        ></textarea>
+        <div class="compose-actions">
+          <button
+            type="button"
+            class="compose-primary"
+            :disabled="pasting"
+            @click="submitDraft('paste')"
+          >
+            粘贴到当前应用
+          </button>
+          <button type="button" class="compose-ghost" @click="submitDraft('copy')">仅复制</button>
+          <button type="button" class="compose-ghost" @click="submitDraft('save')">存为记录</button>
+          <button type="button" class="compose-link" @click="clearDraft">清空</button>
+          <span class="compose-hint">⌘↵ 粘贴 · Esc 返回</span>
+        </div>
+      </section>
+    </div>
+
+    <template v-else>
     <div v-if="filterExpanded" class="filter-panel">
       <div class="filter-row">
         <span class="filter-label">类型</span>
@@ -795,8 +1158,9 @@ watch(customDate, () => {
 
     <div class="popup-footer">
       <span class="footer-summary" :title="filterSummary">{{ filterSummary }}</span>
-      <span class="footer-hint">↑↓ 选择 · Enter 粘贴 · Esc 关闭</span>
+      <span class="footer-hint">↑↓ 选择 · Enter 粘贴 · ⌘E 编辑 · Esc 关闭</span>
     </div>
+    </template>
 
     <!-- 全局图片预览器：与主界面、历史管理共用 -->
     <ImageViewer />
@@ -817,12 +1181,80 @@ watch(customDate, () => {
 /* 常驻工具条：只留搜索框 + 收藏 + 筛选 + 关闭，整体高度压到最小。
    收藏/筛选只保留图标（文字放进 title），避免按钮内文字换行把工具条撑高。 */
 .search-toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px 46px 26px;
+  /* 列表态四个控件、编辑态两个，用 flex 而不是固定列数的 grid，
+     免得切换形态时被空列撑出间隙 */
+  display: flex;
+  align-items: center;
   gap: 6px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--stroke);
   background: var(--panel-subtle);
+}
+
+.toolbar-search {
+  flex: 1;
+  min-width: 0;
+}
+
+.search-toolbar .fav-toggle,
+.search-toolbar .filter-toggle,
+.search-toolbar .edit-toggle,
+.search-toolbar .popup-close {
+  flex: 0 0 auto;
+}
+
+.edit-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.edit-toggle:hover {
+  background: var(--control-bg-hover);
+  border-color: var(--border-strong-hover);
+}
+
+/* 编辑态标题：占住原来搜索框的位置，保持工具条高度一致 */
+.compose-heading {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-left: 2px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.compose-count {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.compose-drawer-toggle {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.compose-drawer-toggle.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* 自绘标题栏的关闭按钮 */
@@ -1190,5 +1622,257 @@ padding: 1px 6px;
 
 .footer-hint {
   flex-shrink: 0;
+}
+
+/* ── 编辑态 ───────────────────────────────────────────────────────────── */
+
+.compose-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+.compose-list {
+  width: 232px;
+  flex: 0 0 232px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--stroke);
+  background: var(--panel-subtle);
+}
+
+.compose-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 7px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--stroke);
+}
+
+.compose-insert-selected {
+  padding: 3px 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.compose-search-row {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--stroke);
+}
+
+.compose-search {
+  width: 100%;
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.compose-search:focus {
+  border-color: var(--accent);
+}
+
+.compose-search::placeholder {
+  color: var(--muted);
+}
+
+.compose-list-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.compose-source {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+}
+
+.compose-source:hover {
+  background: var(--control-bg-hover);
+}
+
+.compose-source.is-checked {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.compose-source.is-disabled {
+  opacity: 0.45;
+}
+
+/* 勾选框用按钮实现，避免原生 checkbox 在高 DPI 下尺寸不受控 */
+.compose-check {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  margin-top: 3px;
+  padding: 0;
+  border: 1px solid var(--stroke-strong);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.compose-check.is-on {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.compose-source-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.compose-source-preview {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.compose-source-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.compose-empty {
+  margin: 12px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.compose-editor {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+
+.compose-textarea {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  padding: 10px 11px;
+  border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.75;
+  outline: none;
+}
+
+.compose-textarea:focus {
+  border-color: var(--accent);
+}
+
+.compose-textarea::placeholder {
+  color: var(--muted);
+}
+
+.compose-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.compose-primary {
+  padding: 6px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-contrast, #ffffff);
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.compose-primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.compose-ghost {
+  padding: 6px 10px;
+  border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.compose-ghost:hover {
+  background: var(--control-bg-hover);
+  border-color: var(--border-strong-hover);
+}
+
+/* 清空这类破坏性但可撤销的操作，用低权重的文字按钮，避免和主操作抢注意力 */
+.compose-link {
+  padding: 4px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.compose-link:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.compose-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* 窄窗口：左栏收起为浮层抽屉，编辑区独占整宽（方案 A 的退化形态） */
+.compose-list.is-narrow {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 5;
+  display: none;
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.12);
+}
+
+.compose-list.is-narrow.is-open {
+  display: flex;
 }
 </style>
