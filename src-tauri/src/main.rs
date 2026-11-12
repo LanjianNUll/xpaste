@@ -369,7 +369,8 @@ async fn deliver_to_frontmost(app: &tauri::AppHandle) -> Result<(), String> {
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
     };
 
-    window_controller::hide_popup(app)?;
+    // 编辑器和面板都要收起：焦点留在自己的任一窗口上，合成的按键都会打空
+    window_controller::hide_panels(app);
     tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
     window_controller::restore_previous_window()?;
 
@@ -467,7 +468,7 @@ async fn deliver_to_frontmost(app: &tauri::AppHandle) -> Result<(), String> {
         macos::frontmost_window_owner_pid()
     ));
 
-    let _ = window_controller::hide_popup(app);
+    window_controller::hide_panels(app);
     let _ = app.hide();
 
     // 焦点必须真的交还出去，合成的 ⌘V 才会落进用户原本的输入框。
@@ -505,7 +506,8 @@ async fn deliver_to_frontmost(app: &tauri::AppHandle) -> Result<(), String> {
 /// 其余平台暂不支持模拟按键，退化为写入剪贴板并收起面板。
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 async fn deliver_to_frontmost(app: &tauri::AppHandle) -> Result<(), String> {
-    window_controller::hide_popup(app)
+    window_controller::hide_panels(app);
+    Ok(())
 }
 
 /// 把一条历史记录写进剪贴板，再投递到用户原本所在的窗口。
@@ -558,15 +560,43 @@ async fn get_item_text(
         .await
 }
 
+/// 收起整套浮层（面板 + 编辑器）。Esc、标题栏关闭、失焦走同一条路径。
 #[tauri::command]
 fn hide_popup(app: tauri::AppHandle) -> Result<(), String> {
-    window_controller::hide_popup(&app)
+    window_controller::hide_panels(&app);
+    Ok(())
 }
 
-/// 切换面板尺寸（列表态 ⇄ 编辑态），并重新贴回鼠标位置。
+/// 打开编辑器窗口：贴在快捷面板右侧，面板本身不动。
 #[tauri::command]
-async fn resize_popup(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
-    window_controller::resize_popup(&app, width, height).await
+fn open_editor(app: tauri::AppHandle) -> Result<(), String> {
+    window_controller::open_editor(&app)
+}
+
+/// 关闭编辑器窗口，把键盘焦点还给快捷面板。
+#[tauri::command]
+fn close_editor(app: tauri::AppHandle) -> Result<(), String> {
+    window_controller::close_editor(&app)
+}
+
+/// 展开 / 收起编辑器右侧的历史栏（窗口朝背离面板的方向变宽，贴着面板的那条边不动）。
+#[tauri::command]
+fn set_editor_sidebar(app: tauri::AppHandle, open: bool) -> Result<(), String> {
+    window_controller::set_editor_sidebar(&app, open)
+}
+
+/// 编辑器是否开着。面板失焦时要靠它判断"焦点是去了编辑器，还是去了别的应用"。
+#[tauri::command]
+fn is_editor_visible(app: tauri::AppHandle) -> bool {
+    app.get_webview_window("editor")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false)
+}
+
+/// 焦点是否还在本应用的浮层上。用于区分"焦点去了自己的编辑器"和"切到了别的应用"。
+#[tauri::command]
+fn is_own_window_frontmost(app: tauri::AppHandle) -> bool {
+    window_controller::own_window_is_frontmost(&app)
 }
 
 #[tauri::command]
@@ -925,30 +955,48 @@ fn main() {
                 });
             }
 
-            // Popup窗口关闭事件处理：隐藏而不是销毁
-            if let Some(popup_window) = app.get_webview_window("popup") {
-                // 让面板跟随当前空间（含其它应用的全屏空间）。不设这一步，用户
-                // 在全屏应用里按快捷键时，面板会被系统放到桌面上，看起来像"没反应"。
-                // 这里在 setup 里设置：此时仍在主线程，可以直接调 AppKit。
-                #[cfg(target_os = "macos")]
-                match popup_window.ns_window() {
+            // 两个浮层窗口都要脱离默认的「空间归属」：
+            //  - 面板：全屏应用里呼出时不能被系统丢到桌面
+            //  - 编辑器：与面板成组出现，通常落在同一个空间
+            // 不设这一步，全屏场景下窗口会被放到桌面上，看起来像"没反应"。
+            // AppKit 的对象只能在主线程收发消息，setup 正好在主线程。
+            #[cfg(target_os = "macos")]
+            for label in ["popup", "editor"] {
+                let Some(window) = app.get_webview_window(label) else {
+                    continue;
+                };
+                match window.ns_window() {
                     Ok(handle) => match macos::configure_popup_panel(handle) {
                         Ok(behavior) => clipboard::log_line(&format!(
-                            "popup: 已转为 NSPanel（nonactivating + level 101），collectionBehavior=0x{behavior:x}"
+                            "{label}: 已转为 NSPanel（nonactivating + level 101），collectionBehavior=0x{behavior:x}"
                         )),
                         Err(error) => {
-                            clipboard::log_line(&format!("popup: 配置全屏浮层失败: {error}"))
+                            clipboard::log_line(&format!("{label}: 配置浮层失败: {error}"))
                         }
                     },
                     Err(error) => {
-                        clipboard::log_line(&format!("popup: 取不到 NSWindow 句柄: {error}"))
+                        clipboard::log_line(&format!("{label}: 取不到 NSWindow 句柄: {error}"))
                     }
                 }
+            }
 
+            // Popup窗口关闭事件处理：隐藏而不是销毁
+            if let Some(popup_window) = app.get_webview_window("popup") {
                 let window = popup_window.clone();
                 let _ = popup_window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         println!("Popup close requested, hiding instead");
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                });
+            }
+
+            // 编辑器窗口同理：它会被反复开关，销毁后重建 WebView 有明显延迟
+            if let Some(editor_window) = app.get_webview_window("editor") {
+                let window = editor_window.clone();
+                let _ = editor_window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         let _ = window.hide();
                     }
@@ -1008,7 +1056,11 @@ fn main() {
             paste_text,
             copy_text,
             get_item_text,
-            resize_popup,
+            open_editor,
+            close_editor,
+            set_editor_sidebar,
+            is_editor_visible,
+            is_own_window_frontmost,
             get_clipboard_image,
             save_clipboard_text,
             save_clipboard_image,

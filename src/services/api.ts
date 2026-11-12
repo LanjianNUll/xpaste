@@ -1,6 +1,6 @@
 import type { ClipboardItem, HistoryPage, HistoryPageQuery, ItemSource } from "@/types";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { isEnabled, enable, disable } from "@tauri-apps/plugin-autostart";
 import { defaultHotkey } from "@/services/platform";
 
@@ -20,8 +20,26 @@ export interface ClipboardSdk {
   copyText(text: string): Promise<void>;
   /** 取一条记录的完整文本（列表返回的是 4096 字符截断版）。 */
   getItemText(id: number, source?: ItemSource): Promise<string>;
-  /** 切换快捷面板尺寸并重新贴回鼠标位置。 */
-  resizePopup(width: number, height: number): Promise<void>;
+  /** 打开编辑器窗口（贴在快捷面板右侧，面板本身不动）。 */
+  openEditor(): Promise<void>;
+  /** 关闭编辑器窗口，焦点还给快捷面板。 */
+  closeEditor(): Promise<void>;
+  /** 展开/收起编辑器右侧的历史栏（窗口宽度跟着变，左上角不动）。 */
+  setEditorSidebar(open: boolean): Promise<void>;
+  /** 编辑器是否开着——面板失焦时据此判断该不该隐藏自己。 */
+  isEditorVisible(): Promise<boolean>;
+  /** 最前面的窗口是否属于本应用（用来区分"焦点去了编辑器"和"切到别的应用"）。 */
+  isOwnWindowFrontmost(): Promise<boolean>;
+  /** 监听编辑器打开事件（用于把焦点放回编辑区末尾）。 */
+  subscribeEditorOpened(listener: () => void): Promise<() => void>;
+  /** 监听「插入素材」事件：面板点了条目，编辑器把它插到光标处。 */
+  subscribeEditorInsert(listener: (text: string) => void): Promise<() => void>;
+  /** 把一段素材送到编辑器光标处（编辑器窗口监听 editor://insert）。 */
+  insertIntoEditor(text: string): Promise<void>;
+  /** 打开编辑器时把「当前选中的那一条」作为默认内容送过去。 */
+  seedEditor(text: string): Promise<void>;
+  /** 监听「默认内容」事件：编辑器只在草稿为空时采用，避免覆盖用户正在写的东西。 */
+  subscribeEditorSeed(listener: (text: string) => void): Promise<() => void>;
   toggleFavorite(id: number): Promise<boolean>;
   removeFavorite(id: number): Promise<void>;
   deleteItem(id: number): Promise<void>;
@@ -104,8 +122,56 @@ class TauriClipboardSdk implements ClipboardSdk {
     return await invoke<string>("get_item_text", { id, source });
   }
 
-  async resizePopup(width: number, height: number): Promise<void> {
-    await invoke<void>("resize_popup", { width, height });
+  async openEditor(): Promise<void> {
+    await invoke<void>("open_editor");
+  }
+
+  async closeEditor(): Promise<void> {
+    await invoke<void>("close_editor");
+  }
+
+  async setEditorSidebar(open: boolean): Promise<void> {
+    await invoke<void>("set_editor_sidebar", { open });
+  }
+
+  async isEditorVisible(): Promise<boolean> {
+    try {
+      return await invoke<boolean>("is_editor_visible");
+    } catch {
+      // 查询失败时按"没开"处理：宁可面板正常隐藏，也不要一直挂在屏幕上
+      return false;
+    }
+  }
+
+  async isOwnWindowFrontmost(): Promise<boolean> {
+    try {
+      return await invoke<boolean>("is_own_window_frontmost");
+    } catch {
+      // 查不到就按"不是自己"处理：宁可多收起一次，也别把面板挂在屏幕上
+      return false;
+    }
+  }
+
+  async subscribeEditorOpened(listener: () => void): Promise<() => void> {
+    return await listen("editor://opened", () => listener());
+  }
+
+  async subscribeEditorInsert(listener: (text: string) => void): Promise<() => void> {
+    return await listen<string>("editor://insert", (event) => listener(event.payload));
+  }
+
+  async insertIntoEditor(text: string): Promise<void> {
+    // 广播（Any）而不是 emitTo：编辑器窗口标签硬编码在事件名里没有好处，
+    // 而 emit 会把事件发给所有 webview，编辑器那边只订阅这一个名字。
+    await emit("editor://insert", text);
+  }
+
+  async seedEditor(text: string): Promise<void> {
+    await emit("editor://seed", text);
+  }
+
+  async subscribeEditorSeed(listener: (text: string) => void): Promise<() => void> {
+    return await listen<string>("editor://seed", (event) => listener(event.payload));
   }
 
   async toggleFavorite(id: number): Promise<boolean> {
@@ -205,7 +271,16 @@ export const setClipboardAndPaste = clipboardSdk.pasteItem.bind(clipboardSdk);
 export const pasteText = clipboardSdk.pasteText.bind(clipboardSdk);
 export const copyText = clipboardSdk.copyText.bind(clipboardSdk);
 export const getItemText = clipboardSdk.getItemText.bind(clipboardSdk);
-export const resizePopup = clipboardSdk.resizePopup.bind(clipboardSdk);
+export const openEditor = clipboardSdk.openEditor.bind(clipboardSdk);
+export const closeEditor = clipboardSdk.closeEditor.bind(clipboardSdk);
+export const setEditorSidebar = clipboardSdk.setEditorSidebar.bind(clipboardSdk);
+export const isEditorVisible = clipboardSdk.isEditorVisible.bind(clipboardSdk);
+export const isOwnWindowFrontmost = clipboardSdk.isOwnWindowFrontmost.bind(clipboardSdk);
+export const subscribeEditorOpened = clipboardSdk.subscribeEditorOpened.bind(clipboardSdk);
+export const subscribeEditorInsert = clipboardSdk.subscribeEditorInsert.bind(clipboardSdk);
+export const insertIntoEditor = clipboardSdk.insertIntoEditor.bind(clipboardSdk);
+export const seedEditor = clipboardSdk.seedEditor.bind(clipboardSdk);
+export const subscribeEditorSeed = clipboardSdk.subscribeEditorSeed.bind(clipboardSdk);
 export const toggleFavorite = clipboardSdk.toggleFavorite.bind(clipboardSdk);
 export const removeFavorite = clipboardSdk.removeFavorite.bind(clipboardSdk);
 export const subscribeClipboardUpdates = clipboardSdk.subscribe.bind(clipboardSdk);

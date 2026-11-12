@@ -3,7 +3,8 @@
   "description": "Allow main window to use core APIs and listen to events.",
   "windows": [
     "main",
-    "popup"
+    "popup",
+    "editor"
   ],
   "permissions": [
     "core:default",
