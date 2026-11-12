@@ -893,6 +893,24 @@ fn main() {
 
             // Popup窗口关闭事件处理：隐藏而不是销毁
             if let Some(popup_window) = app.get_webview_window("popup") {
+                // 让面板跟随当前空间（含其它应用的全屏空间）。不设这一步，用户
+                // 在全屏应用里按快捷键时，面板会被系统放到桌面上，看起来像"没反应"。
+                // 这里在 setup 里设置：此时仍在主线程，可以直接调 AppKit。
+                #[cfg(target_os = "macos")]
+                match popup_window.ns_window() {
+                    Ok(handle) => match macos::float_panel_over_fullscreen(handle) {
+                        Ok(behavior) => clipboard::log_line(&format!(
+                            "popup: collectionBehavior=0x{behavior:x}（已允许跟随全屏空间）"
+                        )),
+                        Err(error) => {
+                            clipboard::log_line(&format!("popup: 设置跨空间显示失败: {error}"))
+                        }
+                    },
+                    Err(error) => {
+                        clipboard::log_line(&format!("popup: 取不到 NSWindow 句柄: {error}"))
+                    }
+                }
+
                 let window = popup_window.clone();
                 let _ = popup_window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {

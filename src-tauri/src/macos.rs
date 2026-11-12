@@ -276,6 +276,82 @@ pub fn open_accessibility_settings() -> Result<(), String> {
     Ok(())
 }
 
+// ── 窗口跨空间显示 ───────────────────────────────────────────────────────
+//
+// 下面两个常量来自 AppKit 的 NSWindow.h：`NSWindowCollectionBehavior` 是一组
+// 按位组合的 NSUInteger。
+
+/// `NSWindowCollectionBehaviorCanJoinAllSpaces`：窗口可以出现在任何空间里。
+const NS_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES: usize = 1 << 0;
+/// `NSWindowCollectionBehaviorFullScreenAuxiliary`：窗口可以进入别人的全屏空间。
+///
+/// 只加这一个不够：全屏空间是系统另外创建的空间，窗口还得先"愿意跟随当前空间"
+/// （即上面的 CanJoinAllSpaces），否则系统仍会把它留在原处。
+const NS_COLLECTION_BEHAVIOR_FULL_SCREEN_AUXILIARY: usize = 1 << 8;
+
+#[link(name = "objc")]
+extern "C" {
+    /// 把选择子名字（如 `setCollectionBehavior:`）注册成 SEL。
+    fn sel_registerName(name: *const c_char) -> *mut c_void;
+    /// Objective-C 的消息发送入口。参数个数与类型由选择子决定，因此下面一律
+    /// 先转成对应签名的函数指针再调用。
+    fn objc_msgSend();
+}
+
+type MsgSend = unsafe extern "C" fn();
+
+unsafe fn selector(name: &str) -> *mut c_void {
+    match CString::new(name) {
+        Ok(name) => sel_registerName(name.as_ptr()),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+/// 让快捷面板能跟随当前空间显示，包括其它应用的全屏空间。
+///
+/// 默认情况下 NSWindow 的 collection behavior 是「归当前应用管理」：它只在自己
+/// 所属应用的空间里出现。本应用常驻托盘、Dock 隐藏后是 UIElement，没有自己的
+/// 空间，于是正在全屏看网页、看视频时呼出面板，系统会把它丢到桌面上——用户得先
+/// 退出全屏才能看到，快捷键形同失效。
+///
+/// 加上 `CanJoinAllSpaces` 让窗口跟随用户当前所在的空间，再加上
+/// `FullScreenAuxiliary` 允许它叠加在别人的全屏窗口之上。这两位置只影响"显示在
+/// 哪个空间"，不改窗口层级——面板盖住全屏应用靠的是 alwaysOnTop 设置的
+/// NSFloatingWindowLevel，全屏窗口本身仍是普通层级。
+///
+/// 返回设置后的行为位，供调用方写进日志核对。
+///
+/// 必须在主线程调用：AppKit 的对象不能在别的线程上收发消息。
+pub fn float_panel_over_fullscreen(ns_window: *mut c_void) -> Result<usize, String> {
+    if ns_window.is_null() {
+        return Err("窗口句柄为空".to_string());
+    }
+
+    unsafe {
+        let behavior_selector = selector("collectionBehavior");
+        let set_behavior_selector = selector("setCollectionBehavior:");
+        if behavior_selector.is_null() || set_behavior_selector.is_null() {
+            return Err("无法注册 Objective-C 选择子".to_string());
+        }
+
+        let send: MsgSend = objc_msgSend;
+        let get_behavior: unsafe extern "C" fn(*mut c_void, *mut c_void) -> usize =
+            std::mem::transmute(send);
+        let set_behavior: unsafe extern "C" fn(*mut c_void, *mut c_void, usize) =
+            std::mem::transmute(send);
+
+        // 读出来再按位或，保留 tao 已经设好的其他行为（例如 Managed），
+        // 避免整个覆盖掉框架的默认设置。
+        let current = get_behavior(ns_window, behavior_selector);
+        let desired = current
+            | NS_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES
+            | NS_COLLECTION_BEHAVIOR_FULL_SCREEN_AUXILIARY;
+        set_behavior(ns_window, set_behavior_selector, desired);
+
+        Ok(desired)
+    }
+}
+
 /// 模拟一次 ⌘V，把剪贴板内容粘贴到当前前台应用。
 ///
 /// 前置条件：应用已被授予「辅助功能」权限，且快捷窗口已经隐藏、焦点交还给了
