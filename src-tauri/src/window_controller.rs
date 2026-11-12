@@ -37,6 +37,11 @@ pub fn toggle_popup(app: &AppHandle) -> Result<(), String> {
         apply_popup_position(&window, corrected_x, corrected_y)?;
     }
     window.show().map_err(|error| error.to_string())?;
+    // macOS：面板是 nonactivating 的，show() 里的 makeKeyAndOrderFront 已经让它
+    // 拿到键盘焦点，而且不会激活应用。再调 set_focus 会走一遍
+    // `[NSApp activateIgnoringOtherApps:]`，系统随即切到应用窗口所在的桌面空间，
+    // 全屏应用里的面板看起来就"跑到桌面上去了"。
+    #[cfg(not(target_os = "macos"))]
     window.set_focus().map_err(|error| error.to_string())?;
     // 通知前端做"每次打开都复位"（清空搜索词、聚焦搜索框、列表回顶）。
     // 这里必须用广播 emit：前端 listen() 默认把目标注册为 Any，而 emit_to 走的是

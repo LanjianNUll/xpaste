@@ -276,10 +276,15 @@ pub fn open_accessibility_settings() -> Result<(), String> {
     Ok(())
 }
 
-// ── 窗口跨空间显示 ───────────────────────────────────────────────────────
+// ── 快捷面板：跨空间 + 叠在全屏应用之上 ──────────────────────────────────
 //
-// 下面两个常量来自 AppKit 的 NSWindow.h：`NSWindowCollectionBehavior` 是一组
-// 按位组合的 NSUInteger。
+// 下面这些常量来自 AppKit 的 NSWindow.h。全屏叠加在 macOS 上不是"把窗口置顶"
+// 那么简单，需要同时满足四件事，少一条都会在某个场景下静默失效：
+//
+//   1. 窗口必须是 NSPanel（普通 NSWindow 会被系统挡在别人的全屏空间之外）
+//   2. 面板要带 nonactivatingPanel 样式，才能在不激活应用的前提下成为 key window
+//   3. 窗口层级要高于全屏内容（NSFloatingWindowLevel 只有 3，不够）
+//   4. collection behavior 要允许跟随当前空间并加入全屏空间
 
 /// `NSWindowCollectionBehaviorCanJoinAllSpaces`：窗口可以出现在任何空间里。
 const NS_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES: usize = 1 << 0;
@@ -289,10 +294,39 @@ const NS_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES: usize = 1 << 0;
 /// （即上面的 CanJoinAllSpaces），否则系统仍会把它留在原处。
 const NS_COLLECTION_BEHAVIOR_FULL_SCREEN_AUXILIARY: usize = 1 << 8;
 
+/// `NSWindowStyleMaskNonactivatingPanel`：面板成为 key window 时不激活所属应用。
+///
+/// 只对 NSPanel 生效。它正是"全屏应用里弹出面板却不切走全屏"的关键：应用一旦被
+/// 激活，系统就会切到应用窗口所在的空间（也就是桌面），面板自然看起来"跑到桌面
+/// 上了"。
+const NS_WINDOW_STYLE_MASK_NONACTIVATING_PANEL: usize = 1 << 7;
+
+/// `NSPopUpMenuWindowLevel`：弹出菜单层级（101），高于全屏应用内容与菜单栏之上
+/// 的浮动层，系统状态项的浮层用的就是这个层级。
+const NS_POPUP_MENU_WINDOW_LEVEL: i64 = 101;
+
 #[link(name = "objc")]
 extern "C" {
     /// 把选择子名字（如 `setCollectionBehavior:`）注册成 SEL。
     fn sel_registerName(name: *const c_char) -> *mut c_void;
+    /// 按名字取类对象（如 `NSPanel`）。
+    fn objc_getClass(name: *const c_char) -> *mut c_void;
+    /// 直接改对象的类。NSPanel 没有在 NSWindow 之上新增实例变量，换类不会破坏
+    /// 内存布局，这也是社区里把 Tauri 窗口变成面板的通行做法。
+    fn object_setClass(obj: *mut c_void, cls: *mut c_void) -> *mut c_void;
+    /// 运行时创建类与挂方法，用来给面板补回 `canBecomeKeyWindow`。
+    fn objc_allocateClassPair(
+        superclass: *mut c_void,
+        name: *const c_char,
+        extra_bytes: usize,
+    ) -> *mut c_void;
+    fn objc_registerClassPair(cls: *mut c_void);
+    fn class_addMethod(
+        cls: *mut c_void,
+        name: *mut c_void,
+        imp: *const c_void,
+        types: *const c_char,
+    ) -> i8;
     /// Objective-C 的消息发送入口。参数个数与类型由选择子决定，因此下面一律
     /// 先转成对应签名的函数指针再调用。
     fn objc_msgSend();
@@ -307,48 +341,128 @@ unsafe fn selector(name: &str) -> *mut c_void {
     }
 }
 
-/// 让快捷面板能跟随当前空间显示，包括其它应用的全屏空间。
+unsafe fn class_named(name: &str) -> *mut c_void {
+    match CString::new(name) {
+        Ok(name) => objc_getClass(name.as_ptr()),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+/// `-[NSWindow canBecomeKeyWindow]` 的替身：恒为 YES。
 ///
-/// 默认情况下 NSWindow 的 collection behavior 是「归当前应用管理」：它只在自己
-/// 所属应用的空间里出现。本应用常驻托盘、Dock 隐藏后是 UIElement，没有自己的
-/// 空间，于是正在全屏看网页、看视频时呼出面板，系统会把它丢到桌面上——用户得先
-/// 退出全屏才能看到，快捷键形同失效。
+/// 无边框窗口（decorations: false）默认不能成为 key window，也就收不到键盘
+/// 事件。tao 是在自己的 `TaoWindow` 子类里用 `focusable` 实例变量实现这一点的，
+/// 但那个类不是 NSPanel，换类后就丢了——必须在我们自己的面板子类里补回来。
+extern "C" fn can_become_key_window(_this: *mut c_void, _cmd: *mut c_void) -> i8 {
+    1
+}
+
+/// 懒创建一次面板类：`NSPanel` 的子类 `XpastePopupPanel`，只多一个
+/// `canBecomeKeyWindow` 覆写。
 ///
-/// 加上 `CanJoinAllSpaces` 让窗口跟随用户当前所在的空间，再加上
-/// `FullScreenAuxiliary` 允许它叠加在别人的全屏窗口之上。这两位置只影响"显示在
-/// 哪个空间"，不改窗口层级——面板盖住全屏应用靠的是 alwaysOnTop 设置的
-/// NSFloatingWindowLevel，全屏窗口本身仍是普通层级。
+/// 为什么不能直接用 `NSPanel`：把类换成 NSPanel 之后，实测
+/// `canBecomeKeyWindow` 对无边框窗口仍返回 NO，面板会显示但打不了字。
+/// 为什么不能改 `NSPanel` 本身：那是全局类，会影响同进程内所有面板。
+fn popup_panel_class() -> Result<*mut c_void, String> {
+    static CLASS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+    if let Some(class) = CLASS.get() {
+        return Ok(*class as *mut c_void);
+    }
+
+    unsafe {
+        let superclass = class_named("NSPanel");
+        if superclass.is_null() {
+            return Err("取不到 NSPanel 类".to_string());
+        }
+        let name = match CString::new("XpastePopupPanel") {
+            Ok(name) => name,
+            Err(_) => return Err("类名非法".to_string()),
+        };
+
+        let class = objc_allocateClassPair(superclass, name.as_ptr(), 0);
+        if class.is_null() {
+            return Err("创建面板类失败".to_string());
+        }
+
+        let types = CString::new("c@:").map_err(|error| error.to_string())?;
+        let imp: *const c_void =
+            can_become_key_window as extern "C" fn(*mut c_void, *mut c_void) -> i8 as *const c_void;
+        class_addMethod(
+            class,
+            selector("canBecomeKeyWindow"),
+            imp,
+            types.as_ptr(),
+        );
+        objc_registerClassPair(class);
+
+        // 并发调用时可能有一个线程先注册成功，另一个拿到 null；用第一个为准。
+        let _ = CLASS.set(class as usize);
+        Ok(CLASS.get().map_or(class, |stored| *stored as *mut c_void))
+    }
+}
+
+/// 把快捷面板改造成"能叠在全屏应用上"的浮动面板。
 ///
-/// 返回设置后的行为位，供调用方写进日志核对。
+/// 背景：本应用常驻托盘、Dock 隐藏后是 UIElement，没有自己的空间。用户在全屏应用
+/// （浏览器、播放器、IDE）里按快捷键时，只设 collectionBehavior 是不够的——
+/// 实测面板仍会被丢到桌面空间，因为普通 NSWindow 不被允许进入别人的全屏空间，
+/// 而调用 `set_focus` 激活应用又会把系统切回桌面空间。
 ///
-/// 必须在主线程调用：AppKit 的对象不能在别的线程上收发消息。
-pub fn float_panel_over_fullscreen(ns_window: *mut c_void) -> Result<usize, String> {
+/// 因此这里一次做四件事：换成 NSPanel 子类、加上 nonactivatingPanel 样式（成为
+/// key window 但不激活应用）、层级提到 NSPopUpMenuWindowLevel、补齐 collection
+/// behavior。配合调用方不再调用 `set_focus`，面板才会"原地"浮在全屏内容之上。
+///
+/// 返回设置后的 collection behavior 位，供调用方写进日志核对。
+///
+/// 必须在主线程调用：AppKit 的对象不能在别的线程上收发消息。函数是幂等的，重复
+/// 调用只会把同样的值再写一遍。
+pub fn configure_popup_panel(ns_window: *mut c_void) -> Result<usize, String> {
     if ns_window.is_null() {
         return Err("窗口句柄为空".to_string());
     }
 
     unsafe {
-        let behavior_selector = selector("collectionBehavior");
-        let set_behavior_selector = selector("setCollectionBehavior:");
-        if behavior_selector.is_null() || set_behavior_selector.is_null() {
-            return Err("无法注册 Objective-C 选择子".to_string());
-        }
-
+        let panel_class = popup_panel_class()?;
         let send: MsgSend = objc_msgSend;
-        let get_behavior: unsafe extern "C" fn(*mut c_void, *mut c_void) -> usize =
+        let get_usize: unsafe extern "C" fn(*mut c_void, *mut c_void) -> usize =
             std::mem::transmute(send);
-        let set_behavior: unsafe extern "C" fn(*mut c_void, *mut c_void, usize) =
+        let set_usize: unsafe extern "C" fn(*mut c_void, *mut c_void, usize) =
+            std::mem::transmute(send);
+        let set_i64: unsafe extern "C" fn(*mut c_void, *mut c_void, i64) =
+            std::mem::transmute(send);
+        let set_bool: unsafe extern "C" fn(*mut c_void, *mut c_void, i8) =
             std::mem::transmute(send);
 
-        // 读出来再按位或，保留 tao 已经设好的其他行为（例如 Managed），
-        // 避免整个覆盖掉框架的默认设置。
-        let current = get_behavior(ns_window, behavior_selector);
-        let desired = current
+        // 1. NSWindow -> NSPanel
+        object_setClass(ns_window, panel_class);
+
+        // 2. 保留原有样式位，只追加"非激活面板"
+        let style = get_usize(ns_window, selector("styleMask"));
+        set_usize(
+            ns_window,
+            selector("setStyleMask:"),
+            style | NS_WINDOW_STYLE_MASK_NONACTIVATING_PANEL,
+        );
+
+        // 3. 面板默认会在应用失活时自动隐藏，这里显式关掉：
+        //    本应用本来就不激活，交给快捷键显隐来控制。
+        set_bool(ns_window, selector("setHidesOnDeactivate:"), 0);
+
+        // 4. 层级与空间行为
+        set_i64(
+            ns_window,
+            selector("setLevel:"),
+            NS_POPUP_MENU_WINDOW_LEVEL,
+        );
+
+        let behavior_selector = selector("collectionBehavior");
+        let behavior = get_usize(ns_window, behavior_selector)
             | NS_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES
             | NS_COLLECTION_BEHAVIOR_FULL_SCREEN_AUXILIARY;
-        set_behavior(ns_window, set_behavior_selector, desired);
+        set_usize(ns_window, selector("setCollectionBehavior:"), behavior);
 
-        Ok(desired)
+        Ok(behavior)
     }
 }
 

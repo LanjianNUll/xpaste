@@ -898,12 +898,12 @@ fn main() {
                 // 这里在 setup 里设置：此时仍在主线程，可以直接调 AppKit。
                 #[cfg(target_os = "macos")]
                 match popup_window.ns_window() {
-                    Ok(handle) => match macos::float_panel_over_fullscreen(handle) {
+                    Ok(handle) => match macos::configure_popup_panel(handle) {
                         Ok(behavior) => clipboard::log_line(&format!(
-                            "popup: collectionBehavior=0x{behavior:x}（已允许跟随全屏空间）"
+                            "popup: 已转为 NSPanel（nonactivating + level 101），collectionBehavior=0x{behavior:x}"
                         )),
                         Err(error) => {
-                            clipboard::log_line(&format!("popup: 设置跨空间显示失败: {error}"))
+                            clipboard::log_line(&format!("popup: 配置全屏浮层失败: {error}"))
                         }
                     },
                     Err(error) => {
