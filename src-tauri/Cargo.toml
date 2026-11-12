@@ -1,6 +1,6 @@
 [package]
 name = "paste_app"
-version = "2.0.15"
+version = "2.1.0"
 description = "Clipboard history manager"
 authors = ["lanjian"]
 edition = "2021"
