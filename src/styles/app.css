@@ -796,3 +796,43 @@ select {
     grid-template-columns: 1fr;
   }
 }
+
+/* ==========================================================================
+ * macOS 窗口骨架：系统原生标题栏 + 通栏侧边栏
+ *
+ * 主窗口用 titleBarStyle: Overlay，红绿灯由窗口服务器绘制，圆角与投影也由
+ * 系统负责。内容必须铺到窗口边缘：如果在窗口内部再留一圈内边距，外侧是系统
+ * 的窗口圆角、内侧是卡片的圆角，两条弧线不同心，看起来就是"双层圆角"，
+ * 也就是最突兀的那种观感。通栏之后只剩系统那一层圆角，干净且原生。
+ * ========================================================================== */
+
+html[data-os="mac"] .app-shell {
+  padding: 0;
+  gap: 0;
+}
+
+html[data-os="mac"] .sidebar {
+  border: 0;
+  border-right: 1px solid var(--stroke);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/*
+ * 让出原生红绿灯的位置：系统从窗口左上角 (20, 20) 起画三颗 12pt 圆点、
+ * 间距 8pt，整组共 72pt。侧边栏自身有 10pt 内边距，所以这里补 76pt。
+ */
+html[data-os="mac"] .sidebar-brand {
+  margin: 0;
+  padding-left: 76px;
+}
+
+html[data-os="mac"] .brand-name {
+  font-size: 13px;
+}
+
+html[data-os="mac"] .main-column {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}

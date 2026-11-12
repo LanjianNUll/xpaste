@@ -2,7 +2,7 @@
 import { ref, watch } from "vue";
 import { Brush, Tools } from "@element-plus/icons-vue";
 import ThemeSettings from "@/components/ThemeSettings.vue";
-import { hotkeyPlaceholder, modifierHint } from "@/services/platform";
+import { hotkeyPlaceholder, isMacOS, modifierHint } from "@/services/platform";
 
 /**
  * 设置面板内容：左侧导航 + 右侧内容区。
@@ -20,6 +20,12 @@ const props = defineProps<{
   currentHotkey: string;
   /** 开机自启是否开启 */
   autostart: boolean;
+  /** Dock 图标是否可见（仅 macOS 有意义） */
+  dockVisible: boolean;
+  /** 是否已获得「辅助功能」权限（仅 macOS 有意义） */
+  accessibilityGranted: boolean;
+  /** 是否正在执行「一键修复」 */
+  accessibilityRepairing: boolean;
   /** 是否正在检查更新 */
   updateChecking: boolean;
   /** 更新状态描述文案 */
@@ -31,6 +37,10 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: "update:currentHotkey", value: string): void;
   (event: "update:autostart", value: boolean): void;
+  (event: "update:dockVisible", value: boolean): void;
+  (event: "request-accessibility"): void;
+  (event: "repair-accessibility"): void;
+  (event: "refresh-accessibility"): void;
   (event: "clear-data"): void;
   (event: "update-action"): void;
 }>();
@@ -119,6 +129,60 @@ function syncDraft() {
               :model-value="autostart"
               @update:model-value="emit('update:autostart', Boolean($event))"
             />
+          </div>
+        </div>
+
+        <!-- Dock 图标只在 macOS 上存在；Windows 侧对应的是 skipTaskbar，已在配置里关掉 -->
+        <div v-if="isMacOS" class="settings-row">
+          <div class="settings-row-main">
+            <div class="settings-row-label">显示 Dock 图标</div>
+            <div class="settings-row-desc">
+              关闭后只在菜单栏保留图标，入口仍可用：左键显示主窗口，右键出菜单
+            </div>
+          </div>
+          <div class="settings-row-control">
+            <el-switch
+              :model-value="dockVisible"
+              @update:model-value="emit('update:dockVisible', Boolean($event))"
+            />
+          </div>
+        </div>
+
+        <!-- 辅助功能权限：没有它，合成 ⌘V 会被系统静默丢弃，表现为"选中没反应" -->
+        <div v-if="isMacOS" class="settings-row">
+          <div class="settings-row-main">
+            <div class="settings-row-label">
+              自动粘贴权限
+              <el-tag
+                size="small"
+                :type="accessibilityGranted ? 'success' : 'warning'"
+                effect="light"
+                style="margin-left: 8px; vertical-align: middle"
+              >
+                {{ accessibilityGranted ? "已授权" : "未授权" }}
+              </el-tag>
+            </div>
+            <div class="settings-row-desc">
+              <template v-if="accessibilityGranted">
+                已获得「辅助功能」权限，选中条目后会自动粘贴到当前输入框
+              </template>
+              <template v-else>
+                未获得「辅助功能」权限，目前只能复制到剪贴板、需要手动 ⌘V。点「一键修复」会先清掉系统里那条绑着旧签名的失效记录，再用当前版本重新申请
+              </template>
+            </div>
+          </div>
+          <div class="settings-row-control">
+            <el-button v-if="accessibilityGranted" plain @click="emit('refresh-accessibility')">
+              重新检测
+            </el-button>
+            <el-button
+              v-else
+              type="primary"
+              :loading="accessibilityRepairing"
+              @click="emit('repair-accessibility')"
+            >
+              一键修复
+            </el-button>
           </div>
         </div>
 

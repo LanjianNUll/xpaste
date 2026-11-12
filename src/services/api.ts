@@ -27,6 +27,18 @@ export interface ClipboardSdk {
   subscribe(listener: () => void): Promise<() => void>;
   subscribePopupShown(listener: () => void): Promise<() => void>;
   hidePopup(): Promise<void>;
+  /** 当前是否已授予 macOS「辅助功能」权限（非 macOS 恒为 true）。 */
+  hasAccessibility(): Promise<boolean>;
+  /** 主动申请「辅助功能」权限，会触发系统授权引导，返回此刻的状态。 */
+  requestAccessibility(): Promise<boolean>;
+  /** 一键修复授权：清除旧记录 → 重新申请 → 打开系统设置。 */
+  repairAccessibility(): Promise<{ trusted: boolean; message: string }>;
+  /** 打开「系统设置 → 隐私与安全性 → 辅助功能」。 */
+  openAccessibilitySettings(): Promise<void>;
+  /** Dock 图标是否可见。 */
+  isDockVisible(): Promise<boolean>;
+  /** 切换 Dock 图标可见性，立即生效。 */
+  setDockVisible(visible: boolean): Promise<void>;
 }
 
 class TauriClipboardSdk implements ClipboardSdk {
@@ -126,6 +138,32 @@ class TauriClipboardSdk implements ClipboardSdk {
 
   async hidePopup(): Promise<void> {
     await invoke<void>("hide_popup");
+  }
+
+  async hasAccessibility(): Promise<boolean> {
+    return await invoke<boolean>("check_accessibility_permission");
+  }
+
+  async requestAccessibility(): Promise<boolean> {
+    return await invoke<boolean>("request_accessibility_permission");
+  }
+
+  async repairAccessibility(): Promise<{ trusted: boolean; message: string }> {
+    return await invoke<{ trusted: boolean; message: string }>(
+      "repair_accessibility_permission"
+    );
+  }
+
+  async openAccessibilitySettings(): Promise<void> {
+    await invoke<void>("open_accessibility_settings");
+  }
+
+  async isDockVisible(): Promise<boolean> {
+    return await invoke<boolean>("get_dock_visible");
+  }
+
+  async setDockVisible(visible: boolean): Promise<void> {
+    await invoke<void>("set_dock_visible", { visible });
   }
 }
 
@@ -244,4 +282,53 @@ export async function getFormatStats(): Promise<Array<[string, number]>> {
 
 export async function getCategoryStats(): Promise<Array<[string, number]>> {
   return await clipboardSdk.getCategoryStats();
+}
+
+/** 是否已授予「辅助功能」权限。查询失败时按"无权限"处理，交给界面引导授权。 */
+export async function hasAccessibilityPermission(): Promise<boolean> {
+  try {
+    return await clipboardSdk.hasAccessibility();
+  } catch {
+    return false;
+  }
+}
+
+/** 触发系统授权引导并返回当前状态。 */
+export async function requestAccessibilityPermission(): Promise<boolean> {
+  try {
+    return await clipboardSdk.requestAccessibility();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 一键修复「辅助功能」授权。
+ *
+ * 内部会清掉 TCC 里绑着旧签名的失效记录，再用当前二进制重新申请一次。
+ * 只靠让用户去系统设置里拨开关是修不好的：那条记录永远匹配不上新签名。
+ */
+export async function repairAccessibilityPermission(): Promise<{
+  trusted: boolean;
+  message: string;
+}> {
+  return await clipboardSdk.repairAccessibility();
+}
+
+/** 跳到「系统设置 → 隐私与安全性 → 辅助功能」。 */
+export async function openAccessibilitySettings(): Promise<void> {
+  await clipboardSdk.openAccessibilitySettings();
+}
+
+export async function isDockVisible(): Promise<boolean> {
+  try {
+    return await clipboardSdk.isDockVisible();
+  } catch {
+    // 非 macOS 或调用失败时按可见处理，避免界面开关与实际状态错位
+    return true;
+  }
+}
+
+export async function setDockVisible(visible: boolean): Promise<void> {
+  await clipboardSdk.setDockVisible(visible);
 }

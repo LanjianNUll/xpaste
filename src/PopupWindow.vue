@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { Search, Filter, ArrowDown, Star, StarFilled } from "@element-plus/icons-vue";
 import type { ClipboardItem, DateRangeType, DateRange, ItemSource } from "@/types";
 import {
@@ -12,7 +12,9 @@ import {
   toggleFavorite,
   removeFavorite,
   subscribeClipboardUpdates,
-  subscribePopupShown
+  subscribePopupShown,
+  requestAccessibilityPermission,
+  openAccessibilitySettings
 } from "@/services/api";
 import { closeImageViewer, imageViewerVisible, openImageViewer } from "@/services/imageViewer";
 import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
@@ -258,12 +260,41 @@ async function handleItemClick(item: ClipboardItem) {
     // 粘贴成功才说明这次搜索确实有用，此时把关键词记进历史搜索。
     recordSearchKeyword(searchKeyword);
   } catch (err) {
-    // Rust 侧会在这里回传可操作的原因（例如 macOS 未授予辅助功能权限），
-    // 直接展示比笼统的"失败"更有用。
-    ElMessage.error(typeof err === "string" ? err : "写入剪贴板失败。");
+    const message = typeof err === "string" ? err : "写入剪贴板失败。";
+    // 权限类错误严格说不算"失败"：内容已经进了剪贴板。这类错误给一条能直接
+    // 走通的引导，比让用户自己去系统设置里翻那一层目录有用得多。
+    if (message.includes("辅助功能")) {
+      void guideToAccessibility();
+    } else {
+      ElMessage.error(message);
+    }
   } finally {
     pasting.value = false;
   }
+}
+
+/**
+ * 引导用户授予「辅助功能」权限。
+ *
+ * 先调用 requestAccessibilityPermission 再打开设置页，顺序不能反：只有主动申请，
+ * 系统才会把**当前这份二进制**登记进「辅助功能」列表。只打开设置页让用户
+ * 手动拨开关时，拨到的很可能是升级前留下的同一条目，于是出现"开关明明开着、
+ * 程序仍然报无权限"。
+ */
+async function guideToAccessibility() {
+  try {
+    await ElMessageBox.confirm(
+      "内容已经复制到剪贴板，手动按 ⌘V 即可粘贴。要让「选中即粘贴」生效，需要授予「辅助功能」权限。",
+      "需要辅助功能权限",
+      { confirmButtonText: "去授权", cancelButtonText: "仅复制", type: "warning" }
+    );
+  } catch {
+    return;
+  }
+
+  await requestAccessibilityPermission();
+  await openAccessibilitySettings();
+  ElMessage.success("在列表里打开 Xpaste 开关后，回来再点一次即可自动粘贴。");
 }
 
 /** 收藏切换：全部模式下按历史 id 切换；收藏模式下星标即取消收藏（条目移除）。 */

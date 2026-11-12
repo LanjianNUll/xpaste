@@ -469,18 +469,54 @@ async fn set_clipboard_and_paste(
     // 没有辅助功能权限时系统会静默丢弃合成按键，表现为"点了没反应"。
     // 这里刻意不隐藏面板：用户必须看到这条提示，才知道要去系统设置里授权。
     // 内容已经进了剪贴板，此时手动按 ⌘V 依然可用。
-    if !macos::has_accessibility_permission() {
+    let trusted = macos::has_accessibility_permission();
+    clipboard::log_line(&format!("paste: accessibility_trusted={trusted}"));
+    if !trusted {
         return Err(
-            "已复制到剪贴板。要自动粘贴，请在「系统设置 → 隐私与安全性 → 辅助功能」中允许 Xpaste。"
+            "已复制到剪贴板。要自动粘贴，请到「设置 → 通用 → 自动粘贴权限」点「一键修复」。"
                 .to_string(),
         );
     }
 
+    let self_pid = std::process::id() as i32;
+    clipboard::log_line(&format!(
+        "paste: frontmost_before={:?} self_pid={self_pid}",
+        macos::frontmost_window_owner_pid()
+    ));
+
     let _ = window_controller::hide_popup(&app);
     let _ = app.hide();
-    tokio::time::sleep(tokio::time::Duration::from_millis(120)).await;
 
-    macos::simulate_paste()
+    // 焦点必须真的交还出去，合成的 ⌘V 才会落进用户原本的输入框。
+    // 固定 sleep 在慢一点的情况下会抢跑——按键发给还处于前台的自己，于是"点了没反应"。
+    // 这里改成轮询前台窗口的 pid，确认换台之后再发按键。
+    let mut waited_ms = 0u64;
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+        waited_ms += 20;
+
+        match macos::frontmost_window_owner_pid() {
+            Some(pid) if pid != self_pid => {
+                clipboard::log_line(&format!("paste: focus returned after {waited_ms}ms (pid={pid})"));
+                break;
+            }
+            _ if waited_ms >= 800 => {
+                clipboard::log_line(&format!(
+                    "paste: focus not returned after {waited_ms}ms, frontmost={:?}",
+                    macos::frontmost_window_owner_pid()
+                ));
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    // 前台切换完成后留一点余量，避开目标应用还在处理激活的那一小段时间。
+    tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
+
+    let result = macos::simulate_paste();
+    clipboard::log_line(&format!("paste: simulate_paste -> {result:?}"));
+    result
 }
 
 /// 其余平台暂不支持模拟按键，退化为仅写入剪贴板。
@@ -559,6 +595,148 @@ async fn set_hotkey(app: tauri::AppHandle, hotkey: String) -> Result<(), String>
     apply_hotkey(&app, &hotkey)
 }
 
+/// 当前是否已被授予「辅助功能」权限（只查询，不弹窗）。
+///
+/// 供前端在设置页/错误提示里判断要不要给"去授权"入口，非 macOS 平台恒为 true。
+#[tauri::command]
+fn check_accessibility_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos::has_accessibility_permission()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// 主动申请「辅助功能」权限并返回当前状态。
+///
+/// 会触发系统授权引导。必须走这个接口而不是让用户自己去列表里翻开关：
+/// 只有这样系统才把当前这份二进制登记进去，避免"开关是开的但程序仍无权限"。
+#[tauri::command]
+fn request_accessibility_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos::request_accessibility_permission()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// 一键修复「辅助功能」授权的结果。
+#[derive(serde::Serialize)]
+struct AccessibilityRepair {
+    /// 修复动作执行完之后此刻的授权状态
+    trusted: bool,
+    /// 面向用户的说明，界面直接展示，不需要再自行拼文案
+    message: String,
+}
+
+/// 一键修复「辅助功能」授权：删掉旧记录 → 用当前二进制重新申请 → 打开设置页。
+///
+/// 三步顺序不能颠倒。TCC 的记录绑定在「代码签名指定要求」上，应用换签名之后
+/// 旧记录虽然还显示为开启，却永远匹配不上新二进制；不先删除，用户无论怎么拨开关
+/// 都不会生效——这正是「系统设置里明明允许了、程序还是说没权限」的成因。
+#[tauri::command]
+async fn repair_accessibility_permission(
+    app: tauri::AppHandle,
+) -> Result<AccessibilityRepair, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let bundle_id = app.config().identifier.clone();
+        let mut notes: Vec<String> = Vec::new();
+
+        match macos::reset_accessibility_grant(&bundle_id) {
+            Ok(()) => {
+                clipboard::log_line("repair: tccutil reset Accessibility ok");
+                notes.push("已清除旧的授权记录".to_string());
+            }
+            Err(error) => {
+                clipboard::log_line(&format!("repair: tccutil reset failed: {error}"));
+                notes.push(format!("清除旧记录失败（{error}）"));
+            }
+        }
+
+        // tccd 落盘有一点延迟，紧接着申请才不会被刚删掉的记录干扰
+        tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
+
+        let trusted = macos::request_accessibility_permission();
+        clipboard::log_line(&format!("repair: request_accessibility -> trusted={trusted}"));
+        if trusted {
+            notes.push("已经获得授权，可以自动粘贴了".to_string());
+            return Ok(AccessibilityRepair { trusted, message: notes.join("；") });
+        }
+
+        // 还没授权：把设置页直接推到用户面前，省掉自己找入口这一步
+        let opened = macos::open_accessibility_settings().is_ok();
+        notes.push(if opened {
+            "请在打开的列表里打开 Xpaste 的开关，回到这里会自动刷新".to_string()
+        } else {
+            "请手动打开「系统设置 → 隐私与安全性 → 辅助功能」，打开 Xpaste 的开关".to_string()
+        });
+
+        Ok(AccessibilityRepair { trusted, message: notes.join("；") })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Ok(AccessibilityRepair {
+            trusted: true,
+            message: "当前平台无需此授权".to_string(),
+        })
+    }
+}
+
+/// 打开「系统设置 → 隐私与安全性 → 辅助功能」。
+#[tauri::command]
+fn open_accessibility_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::open_accessibility_settings()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("当前平台无需此设置".to_string())
+    }
+}
+
+/// Dock 图标可见性的配置文件。
+///
+/// 单独存一个文件而不是塞进 hotkey.txt：两者独立读写，避免为了改一个开关
+/// 去解析另一份配置。
+fn dock_config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    Ok(config_dir.join("dock_icon.txt"))
+}
+
+/// Dock 图标是否可见。默认 false：本应用常驻托盘，Dock 图标属于噪声。
+#[tauri::command]
+fn get_dock_visible(app: tauri::AppHandle) -> Result<bool, String> {
+    let path = dock_config_path(&app)?;
+    Ok(std::fs::read_to_string(path)
+        .map(|value| value.trim() == "visible")
+        .unwrap_or(false))
+}
+
+/// 切换 Dock 图标可见性，立即生效并落盘。
+#[tauri::command]
+fn set_dock_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    let path = dock_config_path(&app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, if visible { "visible" } else { "hidden" })
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "macos")]
+    app.set_dock_visibility(visible).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 fn main() {
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::Builder::new().build())
@@ -588,6 +766,41 @@ fn main() {
                     clipboard::log_line(&format!("autostart: 首次运行开启自启动失败: {error}"));
                 }
                 std::fs::File::create(first_run_flag)?;
+            }
+
+            // 启动自检：把「当前这份二进制」的路径、签名摘要与授权状态写进日志。
+            //
+            // 排查「授权了还是粘贴不了」时，唯一可靠的依据就是这几行——它能证明
+            // 系统认的是哪一份二进制、以及签名会不会随重新编译而变化。
+            #[cfg(target_os = "macos")]
+            {
+                let exe = std::env::current_exe()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|_| "?".to_string());
+                clipboard::log_line(&format!(
+                    "startup: exe={exe} trusted={}",
+                    macos::has_accessibility_permission()
+                ));
+
+                // Contents/MacOS/paste_app -> Contents/MacOS -> Contents -> Xpaste.app
+                let bundle = std::env::current_exe().ok().and_then(|path| {
+                    path.parent()
+                        .and_then(|p| p.parent())
+                        .and_then(|p| p.parent())
+                        .map(|p| p.to_path_buf())
+                });
+                if let Some(bundle) = bundle {
+                    clipboard::log_line(&format!(
+                        "startup: bundle={} {}",
+                        bundle.display(),
+                        macos::signing_diagnostics(&bundle)
+                    ));
+                    if bundle.to_string_lossy().starts_with("/Volumes/") {
+                        clipboard::log_line(
+                            "startup: 警告 — 当前从 DMG 卷内直接运行，请先拖进「应用程序」再打开",
+                        );
+                    }
+                }
             }
 
             // 设置系统托盘菜单
@@ -715,11 +928,22 @@ fn main() {
             apply_hotkey(app.handle(), &hotkey_str)
                 .map_err(|error| format!("注册快捷键失败：{error}"))?;
 
-            // macOS 上窗口是自绘标题栏的，Dock 图标保持默认（可见）：这样即使托盘
-            // 状态项没出现，用户也还能正常切换/退出应用。想做成纯托盘应用（对齐
-            // Windows 的 skipTaskbar），把下面这行放开即可。
-            // #[cfg(target_os = "macos")]
-            // app.handle().set_dock_visibility(false)?;
+            // macOS 的 Dock 图标：默认隐藏，只留顶部菜单栏的状态项。
+            //
+            // 这对应 Windows 的 skipTaskbar——本应用是常驻托盘的剪贴板工具，
+            // 常开的主窗口图标只会挤占 Dock。隐藏后入口仍有两个：菜单栏图标
+            // （左键显示主窗口 / 右键菜单）和全局快捷键。设置页里可以改回来，
+            // 配置落在 dock_icon.txt，改动即时生效。
+            #[cfg(target_os = "macos")]
+            {
+                let dock_file = config_dir.join("dock_icon.txt");
+                let dock_visible = std::fs::read_to_string(&dock_file)
+                    .map(|value| value.trim() == "visible")
+                    .unwrap_or(false);
+                if let Err(error) = app.handle().set_dock_visibility(dock_visible) {
+                    clipboard::log_line(&format!("dock: 设置 Dock 图标可见性失败: {error}"));
+                }
+            }
 
             Ok(())
         })
@@ -748,7 +972,13 @@ fn main() {
             get_category_stats,
             toggle_favorite,
             remove_favorite,
-            list_favorites
+            list_favorites,
+            check_accessibility_permission,
+            request_accessibility_permission,
+            repair_accessibility_permission,
+            open_accessibility_settings,
+            get_dock_visible,
+            set_dock_visible
         ])
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .run(tauri::generate_context!());

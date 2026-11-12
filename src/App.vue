@@ -11,6 +11,12 @@ import {
   setHotkey,
   isAutostartEnabled,
   setAutostart,
+  isDockVisible,
+  setDockVisible,
+  hasAccessibilityPermission,
+  requestAccessibilityPermission,
+  repairAccessibilityPermission,
+  openAccessibilitySettings,
   clearHistory,
   toggleFavorite,
   subscribeClipboardUpdates
@@ -43,6 +49,12 @@ const customDate = ref<Date>(new Date());
 const currentHotkey = ref(defaultHotkey);
 const newHotkey = ref("");
 const autostart = ref(false);
+/** Dock 图标可见性（仅 macOS）：默认隐藏，与 Rust 侧的初始值保持一致 */
+const dockVisible = ref(true);
+/** 是否已获得「辅助功能」权限（仅 macOS 有意义）：没有它就无法模拟 ⌘V 自动粘贴 */
+const accessibilityGranted = ref(true);
+/** 是否正在执行「一键修复」，用于按钮 loading */
+const accessibilityRepairing = ref(false);
 const activeTab = ref("clipboard");
 
 /**
@@ -283,8 +295,18 @@ async function selectTab(id: string) {
   if (id === "settings") {
     newHotkey.value = currentHotkey.value;
     autostart.value = await isAutostartEnabled();
+    dockVisible.value = await isDockVisible();
+    accessibilityGranted.value = await hasAccessibilityPermission();
   }
   activeTab.value = id;
+
+  // 停在设置页且尚未授权时开着轮询：用户去系统设置拨完开关切回来，
+  // 徽标会自动翻绿，不必再手动点一次「重新检测」。
+  if (id === "settings" && !accessibilityGranted.value) {
+    startAccessibilityPolling();
+  } else {
+    stopAccessibilityPolling();
+  }
 }
 
 /**
@@ -299,6 +321,114 @@ async function handleAutostartChange(value: boolean) {
     // 失败时回滚开关，避免界面显示与系统实际状态不一致
     autostart.value = !value;
     ElMessage.error("设置开机启动失败");
+  }
+}
+
+/**
+ * Dock 图标开关：与开机启动一致，改动即时下发到系统，失败回滚。
+ */
+async function handleDockVisibleChange(value: boolean) {
+  dockVisible.value = value;
+  try {
+    await setDockVisible(value);
+    ElMessage.success(value ? "已显示 Dock 图标" : "已隐藏 Dock 图标，可从菜单栏图标进入");
+  } catch (err) {
+    dockVisible.value = !value;
+    ElMessage.error("设置 Dock 图标失败");
+  }
+}
+
+/**
+ * 申请「辅助功能」权限。
+ *
+ * 顺序很关键：先让 Rust 侧调 `AXIsProcessTrustedWithOptions(prompt: true)`，
+ * 系统才会把**当前这份二进制**登记进授权列表，然后再打开设置页。反过来先开设置页，
+ * 用户在列表里拨的很可能是旧版本留下的那条记录，于是"开关是绿的、程序仍无权限"。
+ */
+async function handleRequestAccessibility() {
+  try {
+    const granted = await requestAccessibilityPermission();
+    accessibilityGranted.value = granted;
+    if (granted) {
+      ElMessage.success("已获得辅助功能权限，选中条目后即可自动粘贴");
+      return;
+    }
+    await openAccessibilitySettings();
+    ElMessage.info("请在系统设置里打开 Xpaste 的开关，然后回到这里点「重新检测」");
+  } catch {
+    ElMessage.error("打开辅助功能设置失败");
+  }
+}
+
+/**
+ * 一键修复授权。
+ *
+ * 与「去授权」的区别：这里会先删掉系统里那条绑着旧签名的失效记录。
+ * 不删的话，用户无论怎么拨开关都不会生效——那条记录永远匹配不上当前这份二进制，
+ * 表现就是"系统设置里明明是开的，程序还是说没权限"。
+ */
+async function handleRepairAccessibility() {
+  if (accessibilityRepairing.value) return;
+  accessibilityRepairing.value = true;
+  try {
+    const result = await repairAccessibilityPermission();
+    accessibilityGranted.value = result.trusted;
+    if (result.trusted) {
+      ElMessage.success(result.message || "已获得辅助功能权限");
+      stopAccessibilityPolling();
+    } else {
+      ElMessage.warning(result.message || "请在系统设置里打开 Xpaste 的开关");
+      startAccessibilityPolling();
+    }
+  } catch (error) {
+    ElMessage.error(typeof error === "string" ? error : "修复辅助功能授权失败");
+  } finally {
+    accessibilityRepairing.value = false;
+  }
+}
+
+/**
+ * 设置页停留期间轮询授权状态。
+ *
+ * 用户去系统设置拨开关、再切回来这一步，手动点「重新检测」很容易忘；
+ * 轮询到就绪后自动把徽标翻绿并提示，省掉一次来回。
+ */
+let accessibilityTimer: number | null = null;
+
+function stopAccessibilityPolling() {
+  if (accessibilityTimer !== null) {
+    window.clearInterval(accessibilityTimer);
+    accessibilityTimer = null;
+  }
+}
+
+function startAccessibilityPolling() {
+  if (accessibilityTimer !== null) return;
+  accessibilityTimer = window.setInterval(async () => {
+    if (activeTab.value !== "settings") {
+      stopAccessibilityPolling();
+      return;
+    }
+    if (accessibilityGranted.value) {
+      stopAccessibilityPolling();
+      return;
+    }
+    if (await hasAccessibilityPermission()) {
+      accessibilityGranted.value = true;
+      stopAccessibilityPolling();
+      ElMessage.success("已获得辅助功能权限，选中条目后即可自动粘贴");
+    }
+  }, 1500);
+}
+
+/** 仅重新读取一次授权状态，用于用户从系统设置回来后的确认 */
+async function handleRefreshAccessibility() {
+  accessibilityGranted.value = await hasAccessibilityPermission();
+  if (accessibilityGranted.value) {
+    stopAccessibilityPolling();
+    ElMessage.success("辅助功能权限正常");
+  } else {
+    ElMessage.warning("仍未获得辅助功能权限，请点「一键修复」清除失效记录后重新授权");
   }
 }
 
@@ -420,6 +550,7 @@ onMounted(async () => {
 });
 onBeforeUnmount(() => {
   themeObserver?.disconnect();
+  stopAccessibilityPolling();
   if (hotkeyDebounce != null) {
     window.clearTimeout(hotkeyDebounce);
   }
@@ -443,9 +574,10 @@ watch(customDate, () => {
 
     <!-- 左侧固定侧边栏：品牌区 + 主导航 + 底部用户区 -->
     <aside class="sidebar">
-      <!-- 品牌区同时充当标题栏拖拽区；macOS 红绿灯必须在这里才贴近原生位置 -->
+      <!-- 品牌区同时充当标题栏拖拽区。
+           macOS 的红绿灯由窗口服务器原生绘制（Overlay 标题栏），这里只留品牌，
+           并用 CSS 让出左侧 72pt 的红绿灯位，位置与系统一致。 -->
       <div class="sidebar-brand" data-tauri-drag-region>
-        <TitleBarControls v-if="isMacOS" />
         <span class="brand-logo" aria-hidden="true">X</span>
         <span class="brand-name">Xpaste</span>
       </div>
@@ -586,11 +718,18 @@ watch(customDate, () => {
           :active="activeTab === 'settings'"
           :current-hotkey="newHotkey"
           :autostart="autostart"
+          :dock-visible="dockVisible"
+          :accessibility-granted="accessibilityGranted"
+          :accessibility-repairing="accessibilityRepairing"
           :update-checking="updateChecking"
           :update-status-text="updateStatusText"
           :update-action-text="updateState.phase === 'ready' ? '重启并安装' : '检查更新'"
           @update:current-hotkey="handleHotkeyChange"
           @update:autostart="handleAutostartChange"
+          @update:dock-visible="handleDockVisibleChange"
+          @request-accessibility="handleRequestAccessibility"
+          @repair-accessibility="handleRepairAccessibility"
+          @refresh-accessibility="handleRefreshAccessibility"
           @clear-data="clearDataInSettings"
           @update-action="handleUpdateAction"
         />

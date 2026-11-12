@@ -7,6 +7,12 @@ import App from "./App.vue";
 import "./styles/theme.css";
 import "./styles/app.css";
 import { initTheme } from "./services/theme";
+import { isMacOS, isWindows } from "./services/platform";
+
+// 把宿主平台挂到 <html> 上，样式表据此切换窗口骨架：
+// macOS 用系统原生标题栏（红绿灯由窗口服务器绘制、窗口自带圆角与投影），
+// 内容需要通栏鋪到窗口边缘；Windows 仍是自绘标题栏 + 卡片式留白。
+document.documentElement.dataset.os = isMacOS ? "mac" : isWindows ? "win" : "other";
 
 const app = createApp(App);
 app.use(ElementPlus);
