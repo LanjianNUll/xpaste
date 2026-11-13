@@ -5,8 +5,9 @@
  * - 皮肤（skin）：内置皮肤 id 或 "custom"（自定义），每个皮肤自带主色、
  *   背景风景（services/scenery.ts 生成，注入 --skin-backdrop-* 变量）、
  *   背景色晕（styles/theme.css 中按 data-skin 定义）与背景粒子动效。
- * - 动效（ambient）：全局开关 effectEnabled + 密度 density；粒子渲染由
- *   services/ambient.ts 引擎负责，AmbientLayer.vue 挂载。
+ * - 动效（ambient）：全局开关 effectEnabled + 密度 density；粒子由
+ *   AmbientLayer.vue 生成 DOM、styles/ambient.css 用 @keyframes 驱动，
+ *   运行期没有逐帧脚本（纯 CSS 动效）。
  * - 状态持久化在 localStorage（两个窗口同源共享），变更时通过
  *   Tauri 事件 theme://changed 通知其它窗口即时刷新。
  * - 主题令牌在 styles/theme.css 中由 data-theme / data-skin 驱动，

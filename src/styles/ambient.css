@@ -1,0 +1,597 @@
+/**
+ * 背景粒子层 —— 纯 CSS 实现。
+ *
+ * 设计要点：
+ * 1. 所有运动由 @keyframes 驱动，JS 只负责"生一次 DOM、写一次 CSS 变量"，
+ *    运行期没有逐帧计算，也没有 canvas 重绘。
+ * 2. 每个粒子三层，分别承担一种运动，互不抢占 transform：
+ *      .ambient-particle  垂直下落 / 上浮（translate）
+ *      > i                横向摇摆、游走（translate）
+ *      > i > b            自转、3D 翻转、形状与材质（rotate / transform / 渐变）
+ *    三种频率叠加，轨迹才不像"一排东西同时掉下来"。
+ * 3. 粒子改用负的 animation-delay（--pf-delay），页面一出现就是满屏飘落，
+ *    而不是从空屏开始一个个落下。
+ * 4. 尺寸越大越模糊（--pf-blur），做出近景/远景的景深，比统一的圆点耐看。
+ */
+
+.ambient-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.ambient-glow,
+.ambient-field {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.ambient-field {
+  overflow: hidden;
+  /* 粒子全在子树里自生自灭，别让合成器把整个页面拖进来重绘 */
+  contain: layout paint;
+}
+
+/* ========== 通用外壳：三层结构 + 统一动画槽位 ========== */
+
+.ambient-particle {
+  position: absolute;
+  top: var(--pf-y, 0);
+  left: var(--pf-x, 50%);
+  display: block;
+  width: var(--pf-size, 8px);
+  height: var(--pf-size, 8px);
+  margin-left: calc(var(--pf-size, 8px) / -2);
+  opacity: var(--pf-o, 0.8);
+  pointer-events: none;
+  /* 动画全部由变量驱动，各效果只改变量，不改结构 */
+  animation-name: var(--pf-fall, pf-drop);
+  animation-duration: var(--pf-dur, 14s);
+  animation-timing-function: var(--pf-ease, linear);
+  animation-delay: var(--pf-delay, 0s);
+  animation-iteration-count: infinite;
+  animation-fill-mode: both;
+}
+
+.ambient-particle > i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  animation-name: var(--pf-sway-anim, none);
+  animation-duration: var(--pf-sway-dur, 4s);
+  animation-timing-function: var(--pf-sway-ease, ease-in-out);
+  animation-delay: var(--pf-sway-delay, 0s);
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
+}
+
+.ambient-particle > i > b {
+  display: block;
+  width: 100%;
+  height: 100%;
+  animation-name: var(--pf-turn-anim, none);
+  animation-duration: var(--pf-turn-dur, 8s);
+  animation-timing-function: var(--pf-turn-ease, linear);
+  animation-delay: var(--pf-turn-delay, 0s);
+  animation-iteration-count: infinite;
+}
+
+/* ========== 通用关键帧 ========== */
+
+/* 垂直下落：从视口上方一点点进入，落到下方一点点离开 */
+@keyframes pf-drop {
+  from {
+    translate: 0 -14vh;
+  }
+  to {
+    translate: var(--pf-dx, 0vw) 114vh;
+  }
+}
+
+/* 自下而上：光点上升 */
+@keyframes pf-rise {
+  from {
+    translate: 0 112vh;
+  }
+  to {
+    translate: var(--pf-dx, 0vw) -12vh;
+  }
+}
+
+/* 横向摇摆：alternate 来回，正弦感由 ease-in-out 提供 */
+@keyframes pf-sway {
+  from {
+    translate: calc(var(--pf-sway, 16px) * -1) 0;
+  }
+  to {
+    translate: var(--pf-sway, 16px) 0;
+  }
+}
+
+/* 自转一整圈，起点随机 → 每个粒子朝向不同却都能无缝循环 */
+@keyframes pf-spin {
+  from {
+    rotate: var(--pf-r0, 0deg);
+  }
+  to {
+    rotate: calc(var(--pf-r0, 0deg) + 360deg);
+  }
+}
+
+/* 3D 翻转：花瓣/叶子翻面。翻转幅度控制在 ±46°，越过 60° 就成一条线了 */
+@keyframes pf-flip {
+  from {
+    transform: rotateY(-32deg) rotateX(8deg);
+  }
+  to {
+    transform: rotateY(32deg) rotateX(-8deg);
+  }
+}
+
+/* 游走：一个略不规则的闭合回路（萤火虫） */
+@keyframes pf-wander {
+  0% {
+    translate: 0 0;
+  }
+  25% {
+    translate: var(--pf-ax, 28px) calc(var(--pf-ay, -18px) * -1);
+  }
+  50% {
+    translate: calc(var(--pf-ax, 28px) * 1.8) var(--pf-ay, 18px);
+  }
+  78% {
+    translate: calc(var(--pf-ax, 28px) * 0.4) calc(var(--pf-ay, 18px) * 1.6);
+  }
+  100% {
+    translate: 0 0;
+  }
+}
+
+/* 漂移：极小范围来回，星尘用 */
+@keyframes pf-float {
+  0% {
+    translate: 0 0;
+  }
+  33% {
+    translate: var(--pf-ax, 8px) var(--pf-ay, -6px);
+  }
+  66% {
+    translate: calc(var(--pf-ax, 8px) * -0.7) calc(var(--pf-ay, -6px) * 0.5);
+  }
+  100% {
+    translate: 0 0;
+  }
+}
+
+/* 呼吸闪烁 */
+@keyframes pf-pulse {
+  0%,
+  100% {
+    opacity: 0.32;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.14);
+  }
+}
+
+/* 星芒闪烁：亮度与大小同时呼吸，相位靠 delay 错开 */
+@keyframes pf-twinkle {
+  0%,
+  100% {
+    opacity: 0.24;
+    scale: 0.68;
+  }
+  42% {
+    opacity: 0.95;
+    scale: 1;
+  }
+  58% {
+    opacity: 0.5;
+    scale: 0.88;
+  }
+}
+
+/* ============================================================
+ * 一、樱花花瓣（anime / 自定义皮肤）
+ * 花瓣形 = 两个对角尖、两个对角圆；3D 翻转让它翻面时收窄。
+ * ============================================================ */
+
+[data-effect="petals"] .ambient-particle {
+  --pf-fall: pf-drop;
+  perspective: 460px;
+}
+
+[data-effect="petals"] .ambient-particle > i {
+  --pf-sway-anim: pf-sway;
+}
+
+[data-effect="petals"] .ambient-particle > i > b {
+  --pf-turn-anim: pf-spin;
+  /* 椭圆主体 + 一个略尖的角，比"对角尖"更像花瓣（对角尖会看成柳叶或逗号） */
+  height: 86%;
+  margin-top: 7%;
+  border-radius: 62% 38% 58% 42% / 62% 38% 42% 58%;
+  background:
+    radial-gradient(120% 104% at 32% 24%, #fff8fb 0%, #ffd9e9 22%, #fbb0d1 50%, #f28ab8 76%, #e072a3 100%);
+  box-shadow:
+    inset -1px -1px 2px rgba(198, 74, 128, 0.3),
+    0 1px 3px rgba(198, 74, 128, 0.22);
+  animation-name: var(--pf-turn-anim, pf-spin), pf-flip;
+  animation-duration: var(--pf-turn-dur, 8s), var(--pf-flip-dur, 5s);
+  animation-timing-function: linear, ease-in-out;
+  animation-delay: var(--pf-turn-delay, 0s), var(--pf-flip-delay, 0s);
+  animation-direction: normal, alternate;
+}
+
+/* 暗背景上整体提亮一档，但保留边缘的深粉，避免糊成一块 */
+:root[data-theme="dark"] [data-effect="petals"] .ambient-particle > i > b {
+  background:
+    radial-gradient(120% 104% at 32% 24%, #fff6fb 0%, #ffd4e8 22%, #ffb0d3 52%, #fb8dbc 78%, #ec74a8 100%);
+  box-shadow:
+    inset -1px -1px 2px rgba(255, 178, 212, 0.3),
+    0 1px 4px rgba(226, 100, 160, 0.38);
+}
+
+/* 少量花瓣带卷边高光，整片不一样平 */
+[data-effect="petals"] .ambient-particle:nth-child(3n) > i > b {
+  background:
+    radial-gradient(120% 104% at 28% 20%, #ffffff 0%, #ffe4f0 20%, #fdbada 48%, #f494be 74%, #e57aa9 100%);
+  box-shadow:
+    inset 2px 2px 3px rgba(255, 255, 255, 0.8),
+    inset -1px -1px 2px rgba(198, 74, 128, 0.24),
+    0 1px 3px rgba(198, 74, 128, 0.22);
+}
+
+/* ============================================================
+ * 二、冬雪（winter）
+ * 三种景深：远景小而实，近景大而糊。浅色底上补一层冷色描边，
+ * 否则白色雪点会消失在浅灰背景里。
+ * ============================================================ */
+
+[data-effect="snow"] .ambient-particle {
+  --pf-fall: pf-drop;
+}
+
+[data-effect="snow"] .ambient-particle > i {
+  --pf-sway-anim: pf-sway;
+}
+
+[data-effect="snow"] .ambient-particle > i > b {
+  border-radius: 50%;
+  filter: blur(var(--pf-blur, 0px));
+  background:
+    radial-gradient(circle at 36% 30%, #ffffff 0%, #ffffff 40%, rgba(255, 255, 255, 0.86) 56%, rgba(255, 255, 255, 0) 76%);
+  box-shadow: 0 0 6px 1px rgba(255, 255, 255, 0.55);
+}
+
+/* 浅色主题：主体必须是"淡蓝灰球 + 白亮芯"，纯白球在浅底上等于没有 */
+:root[data-theme="light"] [data-effect="snow"] .ambient-particle > i > b {
+  background:
+    radial-gradient(circle at 34% 28%, #ffffff 0%, #ffffff 22%, #eaf4ff 40%, #c9ddf1 62%, #aec8e1 80%, rgba(160, 190, 220, 0) 96%);
+  box-shadow:
+    0 0 2px rgba(120, 155, 195, 0.42),
+    0 0 3px rgba(255, 255, 255, 0.55);
+}
+
+/* ============================================================
+ * 三、柳絮（spring）
+ * 几乎没有重量：下落极慢、摆幅大、模糊重，像悬浮的绒球。
+ * ============================================================ */
+
+[data-effect="catkins"] .ambient-particle {
+  --pf-fall: pf-drop;
+}
+
+[data-effect="catkins"] .ambient-particle > i {
+  --pf-sway-anim: pf-sway;
+}
+
+[data-effect="catkins"] .ambient-particle > i > b {
+  border-radius: 50%;
+  filter: blur(var(--pf-blur, 0.6px));
+  background:
+    radial-gradient(circle at 42% 38%, #ffffff 0%, rgba(255, 255, 255, 0.92) 26%, rgba(255, 255, 255, 0.42) 52%, rgba(255, 255, 255, 0) 74%);
+  box-shadow:
+    0 0 6px 2px rgba(255, 255, 255, 0.4),
+    0 0 14px 4px rgba(236, 246, 232, 0.24);
+}
+
+:root[data-theme="light"] [data-effect="catkins"] .ambient-particle > i > b {
+  /* 浅底上的白绒毛必须靠"边缘"立住：中心纯白，往外转暖灰，再加一点落影 */
+  background:
+    radial-gradient(circle at 40% 34%, #ffffff 0%, #ffffff 30%, rgba(252, 252, 247, 0.98) 48%, rgba(206, 216, 192, 0.78) 68%, rgba(180, 192, 166, 0) 86%);
+  box-shadow:
+    inset -0.5px -0.5px 1px rgba(140, 158, 126, 0.5),
+    0 1px 2px rgba(100, 122, 86, 0.32),
+    0 0 6px 1.5px rgba(190, 204, 178, 0.4);
+}
+
+/* 少量绒毛拉长一点，像被风扯开 */
+[data-effect="catkins"] .ambient-particle:nth-child(4n) > i > b {
+  width: 148%;
+  height: 82%;
+  margin-left: -24%;
+  border-radius: 50% 50% 46% 46% / 62% 62% 38% 38%;
+}
+
+/* ============================================================
+ * 四、落叶（autumn）
+ * 叶形更细长、带尖，翻转幅度大；五种暖色轮换。
+ * ============================================================ */
+
+[data-effect="leaves"] .ambient-particle {
+  --pf-fall: pf-drop;
+  perspective: 420px;
+}
+
+[data-effect="leaves"] .ambient-particle > i {
+  --pf-sway-anim: pf-sway;
+}
+
+[data-effect="leaves"] .ambient-particle > i > b {
+  position: relative;
+  /* 叶形：对角两个尖角、中间收窄 */
+  height: 96%;
+  margin-top: 2%;
+  border-radius: 0 100% 0 100% / 0 100% 0 100%;
+  background:
+    linear-gradient(142deg, #efb973 0%, #dd9048 34%, #c26a2f 62%, #a55223 86%, #8d4219 100%);
+  box-shadow:
+    inset 1px 1px 2px rgba(255, 226, 180, 0.5),
+    0 1px 3px rgba(90, 40, 12, 0.28);
+  animation-name: var(--pf-turn-anim, pf-spin), pf-flip;
+  animation-duration: var(--pf-turn-dur, 7s), var(--pf-flip-dur, 4.6s);
+  animation-timing-function: linear, ease-in-out;
+  animation-delay: var(--pf-turn-delay, 0s), var(--pf-flip-delay, 0s);
+  animation-direction: normal, alternate;
+}
+
+/* 叶脉：一条稍亮的中线，从叶尖连到叶柄 */
+[data-effect="leaves"] .ambient-particle > i > b::after {
+  content: "";
+  position: absolute;
+  left: 12%;
+  top: 50%;
+  width: 78%;
+  height: 1px;
+  background: linear-gradient(to right, transparent, rgba(255, 232, 190, 0.65), transparent);
+  rotate: 42deg;
+  transform-origin: 50% 50%;
+}
+
+/* 五种暖色由 nth-child 轮换，避免清一色橙 */
+[data-effect="leaves"] .ambient-particle:nth-child(5n + 1) > i > b {
+  background: linear-gradient(142deg, #eab469 0%, #d68b3f 40%, #ad5a25 74%, #8f4219 100%);
+}
+
+[data-effect="leaves"] .ambient-particle:nth-child(5n + 2) > i > b {
+  background: linear-gradient(142deg, #e6a24e 0%, #c9702c 42%, #a34a1c 76%, #7f3714 100%);
+}
+
+[data-effect="leaves"] .ambient-particle:nth-child(5n + 3) > i > b {
+  background: linear-gradient(142deg, #ddb24a 0%, #bf8c2a 44%, #906618 76%, #71500f 100%);
+}
+
+[data-effect="leaves"] .ambient-particle:nth-child(5n + 4) > i > b {
+  background: linear-gradient(142deg, #d98b4a 0%, #b85c2b 42%, #8f3f1c 76%, #6f2f13 100%);
+}
+
+[data-effect="leaves"] .ambient-particle:nth-child(5n + 5) > i > b {
+  background: linear-gradient(142deg, #e0a05a 0%, #c27a3a 44%, #96551f 76%, #744014 100%);
+}
+
+/* ============================================================
+ * 五、萤火虫（summer）
+ * 光核很小、光晕很大；游走 + 呼吸双层错开，明灭不同步。
+ * ============================================================ */
+
+[data-effect="fireflies"] .ambient-particle {
+  --pf-fall: pf-wander;
+  --pf-ease: ease-in-out;
+  top: var(--pf-y, 20%);
+  width: var(--pf-size, 4px);
+  height: var(--pf-size, 4px);
+}
+
+[data-effect="fireflies"] .ambient-particle > i {
+  --pf-sway-anim: none;
+  animation-name: pf-pulse;
+  animation-duration: var(--pf-sway-dur, 3.4s);
+  animation-timing-function: ease-in-out;
+  animation-delay: var(--pf-sway-delay, 0s);
+  animation-iteration-count: infinite;
+  animation-direction: normal;
+}
+
+[data-effect="fireflies"] .ambient-particle > i > b {
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, #fffbe0 0%, #ffe98a 22%, rgba(255, 214, 92, 0.45) 44%, rgba(255, 200, 70, 0) 72%);
+  box-shadow:
+    0 0 6px 2px rgba(255, 222, 120, 0.6),
+    0 0 16px 6px rgba(255, 206, 90, 0.24);
+}
+
+:root[data-theme="light"] [data-effect="fireflies"] .ambient-particle > i > b {
+  background:
+    radial-gradient(circle, #fff7cf 0%, #f5c93a 24%, rgba(214, 150, 30, 0.5) 46%, rgba(198, 132, 22, 0) 74%);
+  box-shadow:
+    0 0 5px 1.5px rgba(216, 156, 34, 0.55),
+    0 0 14px 5px rgba(228, 172, 48, 0.22);
+}
+
+/* ============================================================
+ * 六、星尘（lavender / chinese-red）
+ * 中心圆点 + 两条渐变光条组成四角星芒，整颗呼吸闪烁。
+ * ============================================================ */
+
+[data-effect="stardust"] .ambient-particle {
+  --pf-fall: pf-float;
+  --pf-ease: ease-in-out;
+  top: var(--pf-y, 40%);
+}
+
+[data-effect="stardust"] .ambient-particle > i {
+  --pf-sway-anim: none;
+  animation-name: pf-twinkle;
+  animation-duration: var(--pf-sway-dur, 4.2s);
+  animation-timing-function: ease-in-out;
+  animation-delay: var(--pf-sway-delay, 0s);
+  animation-iteration-count: infinite;
+  animation-direction: normal;
+}
+
+[data-effect="stardust"] .ambient-particle > i > b {
+  position: relative;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, #ffffff 0%, #ffffff 18%, rgba(232, 226, 255, 0.72) 38%, rgba(210, 200, 250, 0) 62%);
+}
+
+/* 竖直光条 */
+[data-effect="stardust"] .ambient-particle > i > b::before,
+/* 水平光条 */
+[data-effect="stardust"] .ambient-particle > i > b::after {
+  content: "";
+  position: absolute;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.9) 44%, rgba(255, 255, 255, 0.95) 52%, rgba(255, 255, 255, 0) 100%);
+}
+
+[data-effect="stardust"] .ambient-particle > i > b::before {
+  inset: -260% 43%;
+}
+
+[data-effect="stardust"] .ambient-particle > i > b::after {
+  inset: 43% -260%;
+  background: linear-gradient(to right, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.9) 44%, rgba(255, 255, 255, 0.95) 52%, rgba(255, 255, 255, 0) 100%);
+}
+
+/* 深色下星芒偏一点淡紫，和紫罗兰主色呼应，但保持中心近白 */
+:root[data-theme="dark"] [data-effect="stardust"] .ambient-particle > i > b::before {
+  background: linear-gradient(to bottom, rgba(226, 216, 255, 0) 0%, rgba(232, 224, 255, 0.88) 44%, rgba(244, 240, 255, 0.96) 52%, rgba(226, 216, 255, 0) 100%);
+}
+
+:root[data-theme="dark"] [data-effect="stardust"] .ambient-particle > i > b::after {
+  background: linear-gradient(to right, rgba(226, 216, 255, 0) 0%, rgba(232, 224, 255, 0.88) 44%, rgba(244, 240, 255, 0.96) 52%, rgba(226, 216, 255, 0) 100%);
+}
+
+/* 浅色主题：紫色星点，光条压深一点，否则在白底上飘一层雾 */
+:root[data-theme="light"] [data-effect="stardust"] .ambient-particle > i > b {
+  background:
+    radial-gradient(circle, #6b52b8 0%, #6a50b5 20%, rgba(132, 112, 190, 0.55) 44%, rgba(150, 130, 200, 0) 66%);
+}
+
+:root[data-theme="light"] [data-effect="stardust"] .ambient-particle > i > b::before {
+  background: linear-gradient(to bottom, rgba(120, 100, 185, 0) 0%, rgba(112, 90, 180, 0.82) 44%, rgba(98, 78, 170, 0.9) 52%, rgba(120, 100, 185, 0) 100%);
+}
+
+:root[data-theme="light"] [data-effect="stardust"] .ambient-particle > i > b::after {
+  background: linear-gradient(to right, rgba(120, 100, 185, 0) 0%, rgba(112, 90, 180, 0.82) 44%, rgba(98, 78, 170, 0.9) 52%, rgba(120, 100, 185, 0) 100%);
+}
+
+/* 中国红皮肤：星尘换成鎏金，配合正红底 */
+:root[data-skin="chinese-red"] [data-effect="stardust"] .ambient-particle > i > b {
+  background:
+    radial-gradient(circle, #fffaf0 0%, #ffe9b8 18%, rgba(255, 205, 110, 0.62) 40%, rgba(255, 190, 90, 0) 64%);
+}
+
+:root[data-skin="chinese-red"] [data-effect="stardust"] .ambient-particle > i > b::before,
+:root[data-skin="chinese-red"] [data-effect="stardust"] .ambient-particle > i > b::after {
+  background: linear-gradient(to bottom, rgba(255, 236, 180, 0) 0%, rgba(255, 226, 150, 0.85) 44%, rgba(255, 240, 200, 0.95) 52%, rgba(255, 236, 180, 0) 100%);
+}
+
+/* ============================================================
+ * 七、光点上升（tech）
+ * 青蓝色微粒缓缓上浮，带一小段拖尾。
+ * ============================================================ */
+
+[data-effect="spark"] .ambient-particle {
+  --pf-fall: pf-rise;
+  --pf-ease: linear;
+}
+
+[data-effect="spark"] .ambient-particle > i > b {
+  position: relative;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, #eafaff 0%, #9fe6ff 20%, rgba(90, 200, 255, 0.5) 44%, rgba(80, 190, 255, 0) 70%);
+  box-shadow: 0 0 8px 2px rgba(110, 210, 255, 0.32);
+}
+
+/* 拖尾：向下渐隐的一小截光 */
+[data-effect="spark"] .ambient-particle > i > b::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 96%;
+  width: 1px;
+  height: var(--pf-trail, 14px);
+  margin-left: -0.5px;
+  background: linear-gradient(to bottom, rgba(150, 226, 255, 0.55), rgba(150, 226, 255, 0));
+}
+
+:root[data-theme="light"] [data-effect="spark"] .ambient-particle > i > b {
+  background:
+    radial-gradient(circle, #cfeaff 0%, #4aa8e0 24%, rgba(40, 130, 200, 0.5) 46%, rgba(34, 116, 182, 0) 72%);
+  box-shadow: 0 0 7px 2px rgba(40, 130, 200, 0.22);
+}
+
+/* ============================================================
+ * 八、代码雨（geek）
+ * 每列是一串竖排字符，用遮罩做出"亮头暗尾"，整列下落。
+ * ============================================================ */
+
+[data-effect="matrix"] .ambient-particle {
+  --pf-fall: pf-drop;
+  --pf-ease: linear;
+  top: var(--pf-y, -20vh);
+  width: auto;
+  height: auto;
+  margin-left: 0;
+  /* 代码雨整体压一档，避免抢正文 */
+  opacity: calc(var(--pf-o, 0.6) * 0.78);
+}
+
+[data-effect="matrix"] .ambient-particle > i > b {
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  font-family: "SF Mono", "Menlo", "Consolas", monospace;
+  font-size: var(--pf-size, 12px);
+  font-weight: 500;
+  line-height: 1.16;
+  letter-spacing: 2px;
+  color: #6dffa0;
+  text-shadow:
+    0 0 4px rgba(80, 255, 140, 0.75),
+    0 0 10px rgba(40, 220, 110, 0.35);
+  /* 亮头暗尾 */
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, rgba(0, 0, 0, 0.9) 34%, rgba(0, 0, 0, 0.5) 66%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, rgba(0, 0, 0, 0.9) 34%, rgba(0, 0, 0, 0.5) 66%, transparent 100%);
+}
+
+/* 浅色主题下用深绿：荧光绿在白底上等于没有 */
+:root[data-theme="light"] [data-effect="matrix"] .ambient-particle {
+  opacity: calc(var(--pf-o, 0.6) * 0.92);
+}
+
+:root[data-theme="light"] [data-effect="matrix"] .ambient-particle > i > b {
+  color: #15713b;
+  text-shadow:
+    0 0 2px rgba(30, 150, 80, 0.35),
+    0 0 6px rgba(30, 150, 80, 0.12);
+}
+
+/* ============================================================
+ * 减少动态效果：不播放，也不留静态残影
+ * ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-field {
+    display: none;
+  }
+}
