@@ -306,14 +306,17 @@ jobs:
   # 与 Windows job 并行：两边都往同一个草稿 Release 上挂产物，
   # 谁先建草稿都行，后到的直接追加资源（tauri-action 会复用已存在的 Release）。
   # macOS 没有免安装的便携版概念，这里只出 dmg 与 .app.tar.gz 自动更新包。
-  # 使用 matrix 并行在 macos-13 (Intel) 和 macos-15 (ARM64/M系列) 上分别构建。
+  # 使用 matrix 并行在 macos-15-intel (Intel) 和 macos-15 (ARM64/M系列) 上分别构建。
+  # 注意：不能用 macos-13 —— 该镜像已于 2025 年 12 月退役，请求它的作业会一直排队
+  # 直到 24 小时超时被自动取消，整条流水线因此永远发不出包。GitHub 给 x86_64 的
+  # 官方迁移标签是 macos-15-intel（可用到 2027 年 8 月）。
   release-macos:
     needs: version
     if: needs.version.outputs.should_release == 'true'
     strategy:
       matrix:
         include:
-          - runner: macos-13
+          - runner: macos-15-intel
             target: x86_64-apple-darwin
             arch_label: x64
           - runner: macos-15
