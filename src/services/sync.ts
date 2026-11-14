@@ -21,9 +21,18 @@ import { isMacOS } from "@/services/platform";
 
 const STORAGE_KEY = "xpaste.sync.v1";
 
-/** 默认中继：已经部署好的密文中继服务。 */
-export const DEFAULT_RELAY =
-  "https://wbapp-opj6ycvzuecwm4kx2bsnpr.app.workbuddy.host/?sharecode=5X535RTS6Y";
+/**
+ * 默认中继地址。
+ *
+ * 刻意不写死在源码里：中继若部署在带 sharecode 的托管平台上，那个 sharecode
+ * 就是访问凭据，写进公开仓库等于把服务额度送人。构建时通过环境变量注入，
+ * 自建中继同样走这条路 —— 换地址不用改代码。
+ *
+ *   VITE_XPASTE_RELAY="https://relay.example.com/"  npm run build
+ *
+ * 留空时同步不可用，设置页会提示"中继地址未配置"，不影响其它功能。
+ */
+export const DEFAULT_RELAY = String(import.meta.env.VITE_XPASTE_RELAY ?? "").trim();
 
 /** 单次搬运条数与体积上限，与服务端限制对齐。 */
 const PUSH_BATCH = 50;
@@ -473,6 +482,13 @@ export async function syncNow(): Promise<SyncStatus> {
   if (!config.enabled || !config.code) {
     return status;
   }
+  // 没配中继时不要空转：直接给出可执行的提示，比 fetch 一个空 URL 报错清楚
+  if (!config.relay) {
+    const message = "同步中继地址未配置（构建时未设置 VITE_XPASTE_RELAY）";
+    saveConfig({ lastError: message });
+    setStatus({ busy: false, lastError: message });
+    return status;
+  }
   if (busy) return status;
 
   busy = true;
@@ -557,6 +573,12 @@ export function startSync(): void {
   const config = loadConfig();
   if (!config.enabled || !config.code) {
     stopSync();
+    return;
+  }
+  // 中继没配就别起轮询，省得每 5 秒白跑一次
+  if (!config.relay) {
+    stopSync();
+    setStatus({ lastError: "同步中继地址未配置（构建时未设置 VITE_XPASTE_RELAY）" });
     return;
   }
   setStatus({ running: true });

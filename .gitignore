@@ -7,3 +7,7 @@ src-tauri/target/
 .oortcodex/
 .gitignore
 /.workbuddy
+
+# 本机构建配置：中继地址可能带 sharecode，不入库
+.env.local
+.env.*.local
