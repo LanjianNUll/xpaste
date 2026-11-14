@@ -7,7 +7,7 @@ use sqlx::{
 
 use crate::models::{
     content_fingerprint, ClipboardItemRow, ClipboardItemSummaryRow, FavoriteSummaryRow,
-    NewClipboardItem,
+    NewClipboardItem, SyncExportItem, SyncImportItem,
 };
 
 #[derive(sqlx::FromRow)]
@@ -577,4 +577,71 @@ pub async fn search_favorites(
     .await?;
 
     Ok(rows)
+}
+
+/// 导出 `since_ts` 之后新增的记录，按时间正序——同步要保证对端按发生顺序落库。
+///
+/// 这里不做 `substr(...)` 截断：列表接口为了省流量会截到 4096 字符，
+/// 但同步必须搬运完整内容，否则对端拿到的是半截文本。
+pub async fn sync_export_items(
+    pool: &SqlitePool,
+    since_ts: i64,
+    limit: i64,
+) -> Result<Vec<SyncExportItem>, sqlx::Error> {
+    sqlx::query_as::<_, SyncExportItem>(
+        "SELECT id, format, category, text, html, color, file_path, created_at, copy_count
+         FROM clipboard_items
+         WHERE created_at > ?
+         ORDER BY created_at ASC, id ASC
+         LIMIT ?",
+    )
+    .bind(since_ts)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+/// 写入对端推来的记录。
+///
+/// 用 `INSERT OR IGNORE` 撞 content_hash 唯一索引，只保留"新内容"。
+/// 刻意不累加 copy_count：对端的一条记录在本机第一次出现时复制次数应当是 1，
+/// 而不是把它当成"又复制了一次"，否则两台设备互相同步会把计数越推越高。
+pub async fn sync_insert_remote(
+    pool: &SqlitePool,
+    item: &SyncImportItem,
+) -> Result<bool, sqlx::Error> {
+    let new_item = NewClipboardItem {
+        format: item.format.clone(),
+        category: item.category.clone(),
+        text: item.text.clone(),
+        html: item.html.clone(),
+        file_path: item.file_path.clone(),
+        color: item.color.clone(),
+        image: None,
+        image_width: None,
+        image_height: None,
+        created_at: item.created_at,
+    };
+    let content_hash = content_fingerprint(&new_item);
+    let copy_count = item.copy_count.unwrap_or(1).clamp(1, 1_000_000);
+
+    let result = sqlx::query(
+        "INSERT OR IGNORE INTO clipboard_items (
+           format, category, text, html, file_path, color, image,
+           image_width, image_height, created_at, copy_count, content_hash
+         ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)",
+    )
+    .bind(&new_item.format)
+    .bind(&new_item.category)
+    .bind(&new_item.text)
+    .bind(&new_item.html)
+    .bind(&new_item.file_path)
+    .bind(&new_item.color)
+    .bind(new_item.created_at)
+    .bind(copy_count)
+    .bind(&content_hash)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
 }

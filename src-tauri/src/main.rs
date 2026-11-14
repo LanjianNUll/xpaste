@@ -16,7 +16,9 @@ mod window_controller;
 use tauri::{Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 
-use crate::models::{ClipboardItem, HistoryPage, HistoryPageQuery};
+use crate::models::{
+    ClipboardItem, HistoryPage, HistoryPageQuery, SyncExportItem, SyncImportItem,
+};
 use crate::sdk::{ClipboardSdk, ItemSource};
 
 /// 平台无关的快捷键描述，解析自用户在设置里填写的字符串。
@@ -357,6 +359,33 @@ async fn list_favorites(
         .sdk
         .list_favorites(query.as_deref().unwrap_or(""), format, limit)
         .await
+}
+
+/// 多设备同步：取出本地新增的记录，供前端加密后推到中继。
+#[tauri::command]
+async fn sync_export_items(
+    state: State<'_, AppState>,
+    since_ts: i64,
+    limit: Option<i64>,
+) -> Result<Vec<SyncExportItem>, String> {
+    state.sdk.sync_export(since_ts, limit).await
+}
+
+/// 多设备同步：接收对端解密后的记录，返回真正新增的条数。
+///
+/// 有新记录才广播 `clipboard://updated`——主窗口和快捷面板都靠这个事件刷新，
+/// 没有新内容时不发，避免一次空同步把两个列表都重建一遍。
+#[tauri::command]
+async fn sync_import_items(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    items: Vec<SyncImportItem>,
+) -> Result<u64, String> {
+    let inserted = state.sdk.sync_import(items).await?;
+    if inserted > 0 {
+        let _ = tauri::Emitter::emit(&app, "clipboard://updated", ());
+    }
+    Ok(inserted)
 }
 
 /// Windows：隐藏面板 → 把焦点还给呼出面板前的窗口 → 模拟 Ctrl+V。
@@ -1086,7 +1115,9 @@ fn main() {
             repair_accessibility_permission,
             open_accessibility_settings,
             get_dock_visible,
-            set_dock_visible
+            set_dock_visible,
+            sync_export_items,
+            sync_import_items
         ])
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .run(tauri::generate_context!());

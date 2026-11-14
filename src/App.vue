@@ -39,6 +39,7 @@ import SettingsShell from "@/components/SettingsShell.vue";
 import AmbientLayer from "@/components/AmbientLayer.vue";
 import TitleBarControls from "@/components/TitleBarControls.vue";
 import UpdateDialog from "@/components/UpdateDialog.vue";
+import { startSync, stopSync } from "@/services/sync";
 
 const query = ref("");
 const items = ref<ClipboardItem[]>([]);
@@ -524,6 +525,9 @@ onMounted(async () => {
   // 启动时自动检查更新（开发模式与浏览器预览会自动跳过）
   void initAutoUpdate();
 
+  // 多设备同步：已启用则拉起轮询；未启用时它自己会安静返回
+  startSync();
+
   themeObserver = new MutationObserver(() => {
     resolvedDark.value = document.documentElement.dataset.theme === "dark";
   });
@@ -551,6 +555,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   themeObserver?.disconnect();
   stopAccessibilityPolling();
+  stopSync();
   if (hotkeyDebounce != null) {
     window.clearTimeout(hotkeyDebounce);
   }

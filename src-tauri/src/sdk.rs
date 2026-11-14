@@ -9,6 +9,7 @@ use sqlx::SqlitePool;
 use crate::history_repository::HistoryFilter;
 use crate::models::{
     encode_png, ClipboardItem, ClipboardItemRow, HistoryPage, HistoryPageQuery, NewClipboardItem,
+    SyncExportItem, SyncImportItem,
 };
 use crate::{classify, db, history_repository};
 
@@ -18,6 +19,10 @@ const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 // 收藏是用户精选的集合，主面板要能一页看全，默认限额比历史更宽。
 const FAVORITE_DEFAULT_LIMIT: i64 = 200;
 const FAVORITE_MAX_LIMIT: i64 = 1000;
+/// 单次同步最多搬运的记录条数，控制单个请求的体积。
+const SYNC_BATCH: i64 = 200;
+/// 单条同步记录允许的最大文本体积，超过直接丢弃而不是截断（截断会悄悄改内容）。
+const SYNC_MAX_TEXT_BYTES: usize = 512 * 1024;
 
 /// 条目数据来源：历史记录或收藏快照，决定按哪个表读写完整内容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,8 +306,38 @@ impl ClipboardSdk {
             .map_err(database_error)
     }
 
-    async fn get_row(&self, source: ItemSource, id: i64) -> Result<ClipboardItemRow, String> {
-        match source {
+    /// 多设备同步：取出 `since_ts` 之后新增的记录（时间正序）。
+    ///
+    /// 单次上限 200 条，避免一次把整个历史塞进一个请求。
+    pub async fn sync_export(
+        &self,
+        since_ts: i64,
+        limit: Option<i64>,
+    ) -> Result<Vec<SyncExportItem>, String> {
+        let limit = limit.unwrap_or(SYNC_BATCH).clamp(1, SYNC_BATCH);
+        db::sync_export_items(&self.pool, since_ts, limit)
+            .await
+            .map_err(database_error)
+    }
+
+    /// 多设备同步：把对端记录写进本地库，返回真正新增的条数。
+    pub async fn sync_import(&self, items: Vec<SyncImportItem>) -> Result<u64, String> {
+        let mut inserted = 0_u64;
+        for raw in items {
+            let Some(item) = sanitize_import(raw) else {
+                continue;
+            };
+            if db::sync_insert_remote(&self.pool, &item)
+                .await
+                .map_err(database_error)?
+            {
+                inserted += 1;
+            }
+        }
+        Ok(inserted)
+    }
+
+    async fn get_row(&self, source: ItemSource, id: i64) -> Result<ClipboardItemRow, String> {        match source {
             ItemSource::History => db::get_item(&self.pool, id).await,
             ItemSource::Favorite => db::get_favorite_row(&self.pool, id).await,
         }
@@ -348,10 +383,59 @@ fn write_to_clipboard(row: ClipboardItemRow) -> Result<(), arboard::Error> {
 fn database_error(error: sqlx::Error) -> String {
     format!("数据库操作失败：{error}")
 }
-
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// 同步入库前的净化。
+///
+/// 记录虽然是从加密房间里解出来的，但内容仍然来自"另一台设备"，而房间是
+/// 凭同步码共享的——这个边界一律按不可信输入处理：长度封顶、格式收敛、
+/// 时间戳修正、空记录丢弃。宁可少同步一条，也不能让脏数据把界面撑爆。
+fn sanitize_import(mut item: SyncImportItem) -> Option<SyncImportItem> {
+    item.format = item.format.trim().to_ascii_lowercase();
+    item.category = item.category.trim().to_ascii_lowercase();
+
+    // 图片不做第一版同步，收到也丢弃，避免对端版本不一致时写进空图片记录。
+    if item.format == "image" || item.category == "image" {
+        return None;
+    }
+    if item.format.is_empty() {
+        item.format = "text".to_string();
+    }
+    if item.category.is_empty() {
+        item.category = item.format.clone();
+    }
+
+    let has_content = item
+        .text
+        .as_deref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+        || item.html.is_some()
+        || item.color.is_some()
+        || item.file_path.is_some();
+    if !has_content {
+        return None;
+    }
+
+    let total = [item.text.as_ref(), item.html.as_ref(), item.file_path.as_ref()]
+        .into_iter()
+        .flatten()
+        .map(String::len)
+        .sum::<usize>();
+    if total > SYNC_MAX_TEXT_BYTES {
+        return None;
+    }
+
+    // 对端时钟可能不准：未来时间会让记录一直钉在列表顶部，归零则永远排在末尾。
+    let now = now_ms();
+    if item.created_at <= 0 || item.created_at > now + 86_400_000 {
+        item.created_at = now;
+    }
+
+    Some(item)
 }

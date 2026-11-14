@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
-import { Brush, Tools } from "@element-plus/icons-vue";
+import { Brush, Connection, Tools } from "@element-plus/icons-vue";
 import ThemeSettings from "@/components/ThemeSettings.vue";
+import SyncSettings from "@/components/SyncSettings.vue";
 import { hotkeyPlaceholder, isMacOS, modifierHint } from "@/services/platform";
 
 /**
@@ -45,10 +46,11 @@ const emit = defineEmits<{
   (event: "update-action"): void;
 }>();
 
-type NavId = "appearance" | "general";
+type NavId = "appearance" | "sync" | "general";
 
 const navItems: Array<{ id: NavId; label: string; icon: unknown }> = [
   { id: "appearance", label: "外观", icon: Brush },
+  { id: "sync", label: "同步", icon: Connection },
   { id: "general", label: "通用", icon: Tools }
 ];
 
@@ -99,6 +101,9 @@ function syncDraft() {
     <section class="settings-content">
       <!-- 外观：主题模式、皮肤、背景动效等，改动即时生效 -->
       <ThemeSettings v-if="activeNav === 'appearance'" :active="props.active" />
+
+      <!-- 同步：多设备共享剪贴板历史，端到端加密 -->
+      <SyncSettings v-else-if="activeNav === 'sync'" />
 
       <!-- 通用：快捷键、开机启动、数据管理、软件更新（行式分组） -->
       <div v-else class="settings-group">

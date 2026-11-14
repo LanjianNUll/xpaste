@@ -75,8 +75,7 @@ pub struct HistoryPage {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HistoryPageQuery {
-    /// 缺省视为不限时间：快捷面板的全局搜索就是靠不传这两个字段实现的。
+pub struct HistoryPageQuery {    /// 缺省视为不限时间：快捷面板的全局搜索就是靠不传这两个字段实现的。
     #[serde(default)]
     pub start_ts: Option<i64>,
     #[serde(default)]
@@ -180,6 +179,43 @@ fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
         *hash ^= u64::from(*byte);
         *hash = hash.wrapping_mul(0x100000001b3);
     }
+}
+
+/// 多设备同步：导出给对端的一条记录。
+///
+/// 只带文本类字段——图片是 RGBA 原始字节，动辄几 MB，塞进密文中继既慢又贵，
+/// 第一版同步先不覆盖图片。
+#[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncExportItem {
+    pub id: i64,
+    pub format: String,
+    pub category: String,
+    pub text: Option<String>,
+    pub html: Option<String>,
+    pub color: Option<String>,
+    pub file_path: Option<String>,
+    pub created_at: i64,
+    pub copy_count: i64,
+}
+
+/// 对端推过来的一条记录，由前端解密后投递。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncImportItem {
+    pub format: String,
+    pub category: String,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub html: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    pub created_at: i64,
+    #[serde(default)]
+    pub copy_count: Option<i64>,
 }
 
 pub fn encode_png(row: ClipboardItemRow, max_dimension: Option<u32>) -> Option<String> {
