@@ -176,9 +176,9 @@
         <p data-i18n="f3.d">默认保留最近 500 条，按 ⌘⇧V 翻回去。支持按类型、设备、时间筛选。</p>
       </div>
       <div class="feature">
-        <div class="feature-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5V5.5h6l2 2.5h9v11H3z"/><path d="M8 14h8"/></svg></div>
-        <h3 data-i18n="f4.t">自动识别类型</h3>
-        <p data-i18n="f4.d">链接、代码、颜色值、地址、文件、图片自动归类，粘贴时格式不丢。</p>
+        <div class="feature-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 4.5l4 4M4 20l1-4.2 9.6-9.6a2 2 0 0 1 2.8 0l1.4 1.4a2 2 0 0 1 0 2.8L9.2 19 5 20z"/></svg></div>
+        <h3 data-i18n="f4.t">复制前随手改</h3>
+        <p data-i18n="f4.d">在历史里直接编辑再粘贴，去掉跟踪参数、引号或多余空行，原条目仍保留。</p>
       </div>
       <div class="feature">
         <div class="feature-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 9.5l2.5 2.5L7 14.5M12 15h4"/></svg></div>
@@ -189,6 +189,64 @@
         <div class="feature-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5a15 15 0 0 1 18 0M6.5 12.5a10 10 0 0 1 11 0M10 16.5a4.6 4.6 0 0 1 4 0"/><circle cx="12" cy="20" r="1"/></svg></div>
         <h3 data-i18n="f6.t">本地优先</h3>
         <p data-i18n="f6.d">断网照常复制粘贴，恢复后自动补传，冲突时按时间戳保留两份。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-lined" id="edit">
+  <div class="wrap split edit-split">
+    <div class="reveal">
+      <div class="section-kicker" data-i18n="ed.kicker">编辑</div>
+      <h2 class="section-title" data-i18n="ed.head">复制完才发现，要改一句。</h2>
+      <p class="section-sub" data-i18n="ed.sub">切回原来的应用去找那句话太麻烦，粘进备忘录改完再复制更麻烦。xpaste 让你在剪贴板里直接改，改完就粘。</p>
+      <ul class="check-list">
+        <li>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
+          <div><b data-i18n="ed.b1">就地编辑</b> — <span data-i18n="ed.b1d">双击任意一条历史，光标直接落在原文里，不用另开窗口。</span></div>
+        </li>
+        <li>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
+          <div><b data-i18n="ed.b2">常用整理一键完成</b> — <span data-i18n="ed.b2d">去掉链接跟踪参数、外层引号、多余空行，链接和代码都不容易改坏。</span></div>
+        </li>
+        <li>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
+          <div><b data-i18n="ed.b3">改动不污染历史</b> — <span data-i18n="ed.b3d">编辑结果另存为新版本，原始条目原样留着，随时能退回去。</span></div>
+        </li>
+        <li>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
+          <div><b data-i18n="ed.b4">手机上一样能改</b> — <span data-i18n="ed.b4d">长按条目就能改，改完直接粘进聊天框，省掉一次来回切换。</span></div>
+        </li>
+      </ul>
+    </div>
+
+    <div class="reveal">
+      <div class="edit-card" id="editCard">
+        <div class="edit-bar">
+          <div class="dots"><i></i><i></i><i></i></div>
+          <span class="panel-title" data-i18n="ed.panel">剪贴板 · 刚刚复制</span>
+          <span class="edit-badge" id="edBadge" data-i18n="ed.badge">已修改</span>
+          <span class="chip is-accent" data-i18n="ed.chip">链接</span>
+        </div>
+        <div class="edit-body">
+          <label class="sr-only" for="edInput" data-i18n="ed.label">编辑这条内容</label>
+          <textarea id="edInput" class="edit-input" rows="3" spellcheck="false">https://xpaste.app/pricing?utm_source=newsletter&amp;utm_medium=email&amp;utm_campaign=launch</textarea>
+          <div class="edit-hint mono"><kbd>⌘</kbd><kbd>↵</kbd><span data-i18n="ed.hint">改完直接复制，原条目仍在历史里</span></div>
+        </div>
+        <div class="edit-tools">
+          <button class="ed-chip" type="button" data-act="params" data-i18n="ed.a1">去跟踪参数</button>
+          <button class="ed-chip" type="button" data-act="quotes" data-i18n="ed.a2">去引号</button>
+          <button class="ed-chip" type="button" data-act="blank" data-i18n="ed.a3">压空行</button>
+          <button class="ed-chip" type="button" data-act="reset" data-i18n="ed.a4">还原</button>
+        </div>
+        <div class="edit-foot">
+          <span class="edit-note" data-i18n="ed.note">可以直接在框里改字，也可以点上面的快捷整理。</span>
+          <button class="btn btn-primary btn-sm" id="edCopy" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5v-2a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></svg>
+            <span id="edCopyLabel" data-i18n="ed.copy">复制修改版</span>
+          </button>
+        </div>
+        <div class="edit-toast" id="edToast" role="status" aria-live="polite"></div>
       </div>
     </div>
   </div>

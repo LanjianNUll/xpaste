@@ -56,12 +56,40 @@
       "f2.d": "在本机加密后才上行，密钥只存在你的设备上。我们无法解密你的任何一条记录。",
       "f3.t": "历史与检索",
       "f3.d": "默认保留最近 500 条，按 ⌘⇧V 翻回去。支持按类型、设备、时间筛选。",
-      "f4.t": "自动识别类型",
-      "f4.d": "链接、代码、颜色值、地址、文件、图片自动归类，粘贴时格式不丢。",
+      "f4.t": "复制前随手改",
+      "f4.d": "在历史里直接编辑再粘贴，去掉跟踪参数、引号或多余空行，原条目仍保留。",
       "f5.t": "命令行优先",
       "f5.d": "xp cp / xp paste / xp ls，SSH 进服务器也能直接把本地剪贴板递过去。",
       "f6.t": "本地优先",
       "f6.d": "断网照常复制粘贴，恢复后自动补传，冲突时按时间戳保留两份。",
+
+      "ed.kicker": "编辑",
+      "ed.head": "复制完才发现，要改一句。",
+      "ed.sub": "切回原来的应用去找那句话太麻烦，粘进备忘录改完再复制更麻烦。xpaste 让你在剪贴板里直接改，改完就粘。",
+      "ed.b1": "就地编辑",
+      "ed.b1d": "双击任意一条历史，光标直接落在原文里，不用另开窗口。",
+      "ed.b2": "常用整理一键完成",
+      "ed.b2d": "去掉链接跟踪参数、外层引号、多余空行，链接和代码都不容易改坏。",
+      "ed.b3": "改动不污染历史",
+      "ed.b3d": "编辑结果另存为新版本，原始条目原样留着，随时能退回去。",
+      "ed.b4": "手机上一样能改",
+      "ed.b4d": "长按条目就能改，改完直接粘进聊天框，省掉一次来回切换。",
+      "ed.panel": "剪贴板 · 刚刚复制",
+      "ed.badge": "已修改",
+      "ed.chip": "链接",
+      "ed.label": "编辑这条内容",
+      "ed.hint": "改完直接复制，原条目仍在历史里",
+      "ed.a1": "去跟踪参数",
+      "ed.a2": "去引号",
+      "ed.a3": "压空行",
+      "ed.a4": "还原",
+      "ed.note": "可以直接在框里改字，也可以点上面的快捷整理。",
+      "ed.copy": "复制修改版",
+      "ed.copied": "已复制修改后的内容",
+      "ed.copiedShort": "已复制",
+      "ed.nochange": "这条已经足够干净了",
+      "ed.fail": "已选中文本，按 ⌘C 复制即可",
+      "ed.reset": "已还原为原始内容",
 
       "how.kicker": "工作方式",
       "how.title": "三跳，一条链路。",
@@ -157,6 +185,9 @@
       "sc.next": "切换到下一条",
       "sc.pin": "固定当前条目",
       "sc.pause": "暂停同步",
+      "sc.edit": "编辑当前条目",
+      "sc.copyedit": "复制修改后的版本",
+      "sc.editnote": "编辑结果另存为新版本，原始条目保留在历史里，随时可以退回去。",
       "cli.title": "命令行",
       "cli.cmd": "命令",
       "cli.desc": "说明",
@@ -228,12 +259,40 @@
       "f2.d": "Encrypted on device before it leaves. Keys never leave your machines, so we can't read a single item.",
       "f3.t": "History and search",
       "f3.d": "The last 500 items by default. Hit ⌘⇧V to go back, filter by type, device or time.",
-      "f4.t": "Type detection",
-      "f4.d": "Links, code, colors, addresses, files and images are classified automatically — formatting stays intact.",
+      "f4.t": "Edit before you paste",
+      "f4.d": "Tweak the item in history before pasting — strip tracking params, quotes or blank lines. The original stays.",
       "f5.t": "CLI first",
       "f5.d": "xp cp, xp paste, xp ls. SSH into a server and hand it your local clipboard without leaving the shell.",
       "f6.t": "Local-first",
       "f6.d": "Copy and paste normally while offline. Everything queues and catches up, keeping both copies on conflict.",
+
+      "ed.kicker": "Editing",
+      "ed.head": "You spot the typo after copying.",
+      "ed.sub": "Going back to the original app is a hassle, and pasting into a scratch note is worse. Edit the item where it lives, then paste.",
+      "ed.b1": "Edit in place",
+      "ed.b1d": "Double-click any history item and the caret lands in the original text — no extra window.",
+      "ed.b2": "One-click cleanups",
+      "ed.b2d": "Drop tracking parameters, wrapping quotes and stray blank lines without breaking links or code.",
+      "ed.b3": "History stays clean",
+      "ed.b3d": "Edits are saved as a new version. The original is untouched, so you can always go back.",
+      "ed.b4": "Same on mobile",
+      "ed.b4d": "Long-press an item to edit, then paste straight into the chat — one switch fewer.",
+      "ed.panel": "Clipboard · just now",
+      "ed.badge": "Edited",
+      "ed.chip": "Link",
+      "ed.label": "Edit this item",
+      "ed.hint": "Copy when you're done — the original stays in history",
+      "ed.a1": "Strip tracking",
+      "ed.a2": "Drop quotes",
+      "ed.a3": "Tidy lines",
+      "ed.a4": "Revert",
+      "ed.note": "Type in the box directly, or use a cleanup above.",
+      "ed.copy": "Copy edited",
+      "ed.copied": "Edited version copied",
+      "ed.copiedShort": "Copied",
+      "ed.nochange": "Already clean",
+      "ed.fail": "Text selected — press ⌘C to copy",
+      "ed.reset": "Reverted to the original",
 
       "how.kicker": "How it works",
       "how.title": "Three hops, one path.",
@@ -329,6 +388,9 @@
       "sc.next": "Next item",
       "sc.pin": "Pin current item",
       "sc.pause": "Pause sync",
+      "sc.edit": "Edit current item",
+      "sc.copyedit": "Copy edited version",
+      "sc.editnote": "Edits save as a new version; the original stays in history so you can always roll back.",
       "cli.title": "Command line",
       "cli.cmd": "Command",
       "cli.desc": "Description",
@@ -462,6 +524,129 @@
       reveals.forEach(function (el) { io.observe(el); });
     } else {
       reveals.forEach(function (el) { el.classList.add("is-in"); });
+    }
+
+    var edInput = document.getElementById("edInput");
+    if (edInput) {
+      var edCard = document.getElementById("editCard");
+      var edToast = document.getElementById("edToast");
+      var edCopyBtn = document.getElementById("edCopy");
+      var edCopyLabel = document.getElementById("edCopyLabel");
+      var original = edInput.value;
+      var toastTimer = null;
+
+      var tr = function (k, fallback) {
+        var d = DICT[currentLang()] || DICT.zh;
+        return d[k] != null ? d[k] : fallback;
+      };
+
+      var toast = function (msg) {
+        if (!edToast) return;
+        edToast.textContent = msg;
+        edToast.classList.add("is-on");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(function () { edToast.classList.remove("is-on"); }, 2300);
+      };
+
+      var sync = function () {
+        if (edCard) edCard.classList.toggle("is-edited", edInput.value !== original);
+        edInput.style.height = "auto";
+        edInput.style.height = Math.min(edInput.scrollHeight + 2, 210) + "px";
+      };
+
+      var transforms = {
+        params: function (t) {
+          if (!/^https?:\/\//i.test(t.trim())) return t;
+          try {
+            var u = new URL(t.trim());
+            var dead = [];
+            u.searchParams.forEach(function (_v, k) {
+              if (/^(utm_|fbclid$|gclid$|spm$|ref$|from$|source$|share|si$)/i.test(k)) dead.push(k);
+            });
+            dead.forEach(function (k) { u.searchParams.delete(k); });
+            return u.toString();
+          } catch (e) {
+            return t;
+          }
+        },
+        quotes: function (t) {
+          return t.replace(/^\s*["'\u201c\u201d\u2018\u2019\u300c\u300d\u300e\u300f]+/, "")
+                  .replace(/["'\u201c\u201d\u2018\u2019\u300c\u300d\u300e\u300f]+\s*$/, "")
+                  .trim();
+        },
+        blank: function (t) {
+          return t.replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+        }
+      };
+
+      edInput.addEventListener("input", sync);
+
+      Array.prototype.forEach.call(edCard.querySelectorAll("[data-act]"), function (btn) {
+        btn.addEventListener("click", function () {
+          var act = btn.getAttribute("data-act");
+          if (act === "reset") {
+            edInput.value = original;
+            sync();
+            toast(tr("ed.reset", "已还原为原始内容"));
+            return;
+          }
+          var fn = transforms[act];
+          if (!fn) return;
+          var next = fn(edInput.value);
+          if (next === edInput.value) {
+            toast(tr("ed.nochange", "这条已经足够干净了"));
+            return;
+          }
+          edInput.value = next;
+          sync();
+        });
+      });
+
+      var legacyCopy = function () {
+        try {
+          edInput.focus();
+          edInput.select();
+          return document.execCommand("copy");
+        } catch (e) {
+          return false;
+        }
+      };
+
+      var copyEdited = function () {
+        var done = function (ok) {
+          if (ok) {
+            toast(tr("ed.copied", "已复制修改后的内容"));
+          } else {
+            edInput.focus();
+            edInput.select();
+            toast(tr("ed.fail", "已选中文本，按 ⌘C 复制即可"));
+          }
+          if (edCopyLabel) {
+            edCopyLabel.textContent = ok ? tr("ed.copiedShort", "已复制") : tr("ed.copy", "复制修改版");
+            setTimeout(function () {
+              edCopyLabel.textContent = tr("ed.copy", "复制修改版");
+            }, 1900);
+          }
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(edInput.value).then(
+            function () { done(true); },
+            function () { done(legacyCopy()); }
+          );
+        } else {
+          done(legacyCopy());
+        }
+      };
+
+      if (edCopyBtn) edCopyBtn.addEventListener("click", copyEdited);
+      edInput.addEventListener("keydown", function (e) {
+        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+          e.preventDefault();
+          copyEdited();
+        }
+      });
+
+      sync();
     }
 
     var y = document.getElementById("year");
