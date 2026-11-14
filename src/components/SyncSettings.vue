@@ -147,14 +147,14 @@ async function handleSyncNow() {
         <div class="settings-row-main">
           <div class="settings-row-label">同步码</div>
           <div class="settings-row-desc">
-            这就是你的身份，等同于密码。换设备时把它抄过去即可，丢了只能换新的
+            等同于密码，换设备时抄过去即可；丢了只能换新的
           </div>
         </div>
         <div class="settings-row-control">
+          <code class="sync-code">{{ maskedCode }}</code>
           <el-button size="small" text @click="revealing = !revealing">
             {{ revealing ? "隐藏" : "显示" }}
           </el-button>
-          <code class="sync-code">{{ maskedCode }}</code>
           <el-button :icon="CopyDocument" size="small" @click="handleCopy">复制</el-button>
           <el-button :icon="Refresh" size="small" @click="handleRotate">换新</el-button>
         </div>
