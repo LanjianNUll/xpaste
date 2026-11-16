@@ -511,6 +511,15 @@ watch(() => filters.value.customDateRange, () => {
         </template>
       </el-table-column>
       
+      <el-table-column label="来源" width="110">
+        <template #default="{ row }">
+          <el-tag v-if="row.sourceDevice" size="small" type="info" effect="plain">
+            {{ row.sourceDevice }}
+          </el-tag>
+          <span v-else class="source-local">本机</span>
+        </template>
+      </el-table-column>
+
       <el-table-column label="内容预览" min-width="400">
         <template #default="{ row }">
           <div v-if="row.format === 'image'" class="preview-image" @click="openImagePreview(row)">
@@ -645,6 +654,12 @@ watch(() => filters.value.customDateRange, () => {
 
 .preview-image:hover {
   opacity: 0.8;
+}
+
+/* 本机记录的来源列：不抢眼，但让"这条是同步来的"一眼可辨 */
+.source-local {
+  color: var(--el-text-color-placeholder);
+  font-size: 12px;
 }
 
 .preview-link {

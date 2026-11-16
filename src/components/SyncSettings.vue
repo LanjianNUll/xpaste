@@ -11,10 +11,12 @@ import {
   rotateCode,
   setLanOnly,
   setSyncImages,
+  setSyncMode,
   subscribeConfig,
   subscribeStatus,
   syncNow,
   type SyncConfig,
+  type SyncMode,
   type SyncStatus
 } from "@/services/sync";
 
@@ -68,26 +70,63 @@ const relayMissing = computed(() => !config.value.relay);
 /** 当前实际走的是哪条通道：手动开了局域网，或者压根没有中继可用 */
 const lanMode = computed(() => config.value.lanOnly || !config.value.relay);
 
+/** 方向前缀：单向模式一定要在状态里写明，否则用户会以为双向都在跑 */
+const modeLabel = computed(() => {
+  if (config.value.mode === "send") return "仅发送";
+  if (config.value.mode === "receive") return "仅接收";
+  return "";
+});
+
+/** 邻居的可读名字：设备名，用来判断"连上的到底是不是那台" */
+const peerLabel = computed(() => {
+  const names = status.value.lanPeerNames;
+  if (names && names.length > 0) return names.join("、");
+  return `${status.value.lanPeers} 台设备`;
+});
+
+/** 发现得到但连不上的设备：和"连上了"必须分开说，否则用户会以为同步在跑 */
+const unreachableText = computed(() => status.value.lanUnreachable?.[0] ?? "");
+
+/** 收到却解不开的条数：通常意味着两台设备的同步码其实不是同一个 */
+const skippedText = computed(() => {
+  const skipped = status.value.skipped ?? 0;
+  if (!skipped) return "";
+  return ` · 有 ${skipped} 条解不开（两台的同步码可能不一致）`;
+});
+
 const statusText = computed(() => {
   if (!config.value.enabled) return "未启用";
   if (status.value.busy) return "同步中…";
-  if (status.value.lastError) return status.value.lastError;
+  if (status.value.lastError) return status.value.lastError + skippedText.value;
+
+  const prefix = modeLabel.value ? `${modeLabel.value} · ` : "";
 
   if (lanMode.value) {
-    const peers = status.value.lanPeers;
-    if (peers === 0) {
+    if (status.value.lanPeers === 0) {
       return "局域网内还没有发现同房间设备：确认两台设备连的是同一个 Wi-Fi，并填入同一个同步码";
     }
-    const base = `局域网直连 ${peers} 台设备`;
-    if (!status.value.lastSyncAt) return `${base} · 等待首次同步`;
+    const base = `已发现 ${peerLabel.value}`;
+    // 探测通了才算真连上；只看到广播、TCP 连不上时把原因摆出来
+    if (unreachableText.value) {
+      return `${prefix}${base}，但连不上：${unreachableText.value}`;
+    }
+    if (!status.value.lastSyncAt) return `${prefix}${base} · 等待首次同步`;
     const time = new Date(status.value.lastSyncAt).toLocaleTimeString();
-    return `${base} · 上次同步 ${time} · 收到 ${status.value.lastPulled} 条 · 发出 ${status.value.lastPushed} 条`;
+    return `${prefix}${base} · 上次同步 ${time} · 收到 ${status.value.lastPulled} 条 · 发出 ${status.value.lastPushed} 条${skippedText.value}`;
   }
 
-  if (!status.value.lastSyncAt) return "等待首次同步";
+  if (!status.value.lastSyncAt) return `${prefix}等待首次同步`;
   const time = new Date(status.value.lastSyncAt).toLocaleTimeString();
-  return `上次同步 ${time} · 收到 ${status.value.lastPulled} 条 · 发出 ${status.value.lastPushed} 条`;
+  return `${prefix}上次同步 ${time} · 收到 ${status.value.lastPulled} 条 · 发出 ${status.value.lastPushed} 条${skippedText.value}`;
 });
+
+/** 状态行是不是"看起来连上、其实不通"：用来换成警示色 */
+const statusWarning = computed(
+  () =>
+    Boolean(status.value.lastError) ||
+    Boolean(unreachableText.value) ||
+    Boolean(status.value.skipped)
+);
 
 async function handleToggle(value: boolean) {
   try {
@@ -147,6 +186,18 @@ function handleLanToggle(value: boolean) {
   );
 }
 
+/** 同步方向：只发 / 只收 / 双向，切换后立刻跑一轮 */
+function handleModeChange(value: SyncMode) {
+  config.value = setSyncMode(value);
+  ElMessage.success(
+    value === "both"
+      ? "已切回双向同步，期间积压的内容会一并补发和补收"
+      : value === "send"
+        ? "只发送：本机内容会传给对方，但不接收对方的内容"
+        : "只接收：只拉取对方的内容，本机内容不会传出去"
+  );
+}
+
 /** 图片同步开关：默认关闭，打开后回溯 7 天并立刻推一轮 */
 function handleImagesToggle(value: boolean) {
   config.value = setSyncImages(value);
@@ -186,8 +237,9 @@ async function handleSyncNow() {
         <div class="settings-row-main">
           <div class="settings-row-label">同步码</div>
           <div class="settings-row-desc">
-            6 位数字，等同于密码：在另一台设备输入即可；泄露后点「换新」重新生成
+            6 位数字，等同于密码。每台设备首次开启时各自随机生成；在另一台输入这串数字即可配对，泄露后点「换新」重新生成
           </div>
+          <div class="sync-self">本机：{{ config.deviceName }}</div>
         </div>
         <div class="settings-row-control">
           <code class="sync-code sync-code--short">{{ formattedCode }}</code>
@@ -201,7 +253,7 @@ async function handleSyncNow() {
           <div class="settings-row-label">局域网直连</div>
           <div class="settings-row-desc">
             不经过中继，只和同一个 Wi-Fi 下的设备互传。中继连不上时打开它，
-            发现设备后每 5 秒自动同步一次
+            发现设备后每 5 秒自动同步一次；状态里会区分「发现到」和「连得上」
           </div>
         </div>
         <div class="settings-row-control">
@@ -209,6 +261,27 @@ async function handleSyncNow() {
             :model-value="config.lanOnly"
             @update:model-value="handleLanToggle(Boolean($event))"
           />
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-main">
+          <div class="settings-row-label">同步方向</div>
+          <div class="settings-row-desc">
+            只发送时本机内容会传给其他设备，但不接收对方的；只接收反之。
+            单向期间不会推进另一侧的进度，切回双向会把攒下的内容补齐
+          </div>
+        </div>
+        <div class="settings-row-control">
+          <el-radio-group
+            :model-value="config.mode"
+            size="small"
+            @update:model-value="handleModeChange($event as SyncMode)"
+          >
+            <el-radio-button value="both">双向</el-radio-button>
+            <el-radio-button value="send">只发送</el-radio-button>
+            <el-radio-button value="receive">只接收</el-radio-button>
+          </el-radio-group>
         </div>
       </div>
 
@@ -232,7 +305,7 @@ async function handleSyncNow() {
           <div class="settings-row-label">同步状态</div>
           <div class="settings-row-desc">
             {{ statusText }}
-            <template v-if="status.lastError">
+            <template v-if="statusWarning">
               <el-icon class="sync-warn"><Warning /></el-icon>
             </template>
           </div>
@@ -274,6 +347,13 @@ async function handleSyncNow() {
 </template>
 
 <style scoped>
+/* 本机标识：弱化处理，只在用户想核对“哪台是哪台”时才需要 */
+.sync-self {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+}
+
 .sync-code {
   display: inline-block;
   max-width: 260px;

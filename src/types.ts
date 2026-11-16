@@ -25,6 +25,8 @@ export interface ClipboardItem {
   copyCount: number;
   /** 历史条目=是否已收藏；收藏列表条目恒为 true。 */
   favorited: boolean;
+  /** 同步进来的记录会带来源设备名；本机复制的内容为 null/undefined */
+  sourceDevice?: string | null;
 }
 
 export interface HistoryPage {

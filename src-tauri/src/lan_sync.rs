@@ -59,6 +59,19 @@ pub struct LanPeer {
     pub last_seen_ms: i64,
 }
 
+/// 一次连通性探测的结果。
+///
+/// 发现靠 UDP 广播，传输走 TCP：能"看见"对方，不代表能连上对方
+/// （Windows 防火墙默认拦入站、AP 隔离、端口被占都会这样）。界面上
+/// 把这两件事分开说，用户才不会被"1 台设备 + 0 条"绕晕。
+#[derive(Clone, Serialize)]
+pub struct PeerProbe {
+    pub addr: String,
+    pub device: String,
+    pub ok: bool,
+    pub error: String,
+}
+
 #[derive(Serialize, Deserialize)]
 struct Packet {
     /// `announce` / `push`
@@ -231,6 +244,66 @@ impl LanSync {
         Ok(accepted)
     }
 
+    /// 探一遍每个邻居的传输端口。
+    ///
+    /// 发的是空 items 的 push：对端只会回应 ok，不会往列表里写任何东西。
+    /// 这一步能把"看得见但连不上"和"能连上但没内容"彻底区分开。
+    pub fn probe(&self) -> Vec<PeerProbe> {
+        let targets = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.prune();
+            inner
+                .peers
+                .iter()
+                .filter_map(|(addr, peer)| {
+                    addr.parse::<SocketAddr>()
+                        .ok()
+                        .map(|parsed| (parsed, peer.device.clone()))
+                })
+                .collect::<Vec<_>>()
+        };
+        if targets.is_empty() {
+            return Vec::new();
+        }
+
+        let (room, device) = {
+            let inner = self.inner.lock().unwrap();
+            (inner.room.clone(), inner.device.clone())
+        };
+        if room.is_empty() {
+            return Vec::new();
+        }
+
+        let packet = Packet {
+            op: "push".to_string(),
+            room,
+            device,
+            port: SERVICE_PORT,
+            iid: String::new(),
+            items: Vec::new(),
+        };
+        let Ok(line) = serde_json::to_string(&packet) else {
+            return Vec::new();
+        };
+
+        targets
+            .into_iter()
+            .map(|(addr, device)| {
+                let result = send_line(addr, &line);
+                PeerProbe {
+                    addr: addr.to_string(),
+                    device,
+                    ok: matches!(result, Ok(true)),
+                    error: match result {
+                        Ok(true) => String::new(),
+                        Ok(false) => "对端拒绝接收：两台的同步码可能不一致".to_string(),
+                        Err(err) => err,
+                    },
+                }
+            })
+            .collect()
+    }
+
     /// 取走并清空收件箱。前端拿到后自行解密、入库。
     pub fn take(&self) -> Vec<LanRecord> {
         let mut inner = self.inner.lock().unwrap();
@@ -243,20 +316,43 @@ impl LanSync {
         self.inner.lock().unwrap().inbox.len()
     }
 
+    /// 后台线程出错时记一笔，前端能通过 lan_sync_error 读到。
+    pub fn note_error(&self, message: String) {
+        self.inner.lock().unwrap().last_error = message;
+    }
+
     pub fn last_error(&self) -> String {
         self.inner.lock().unwrap().last_error.clone()
     }
 
     fn ensure_threads(&self) {
+        if self.started.load(Ordering::SeqCst) {
+            return;
+        }
+        // 先探一下端口：被另一个实例占着就别抢，直接把话说清楚。
+        // 复制管理器常年挂在菜单栏，用户装完新版本往往没退旧版本，
+        // 两个实例抢同一个端口时连接会被分流，表现就是时好时坏、多数 0 条。
+        if let Ok(stream) = TcpStream::connect_timeout(
+            &SocketAddr::from(([127, 0, 0, 1], SERVICE_PORT)),
+            Duration::from_millis(200),
+        ) {
+            drop(stream);
+            self.note_error(format!(
+                "端口 {SERVICE_PORT} 被另一个 Xpaste 占用：请退出旧版本（菜单栏图标 → 退出）后再开启同步"
+            ));
+            return;
+        }
         if self.started.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.inner.lock().unwrap().last_error.clear();
         // 两个线程都活到进程结束：一个守 TCP，一个喊话 + 收话。
         std::thread::Builder::new()
             .name("xpaste-lan-server".into())
             .spawn(move || {
                 if let Err(err) = serve_loop() {
-                    eprintln!("[lan-sync] 接收端口不可用：{err}");
+                    eprintln!("[lan-sync] {err}");
+                    global().note_error(err);
                 }
             })
             .ok();
@@ -264,7 +360,8 @@ impl LanSync {
             .name("xpaste-lan-discovery".into())
             .spawn(move || {
                 if let Err(err) = discovery_loop() {
-                    eprintln!("[lan-sync] 发现端口不可用：{err}");
+                    eprintln!("[lan-sync] {err}");
+                    global().note_error(err);
                 }
             })
             .ok();
@@ -368,7 +465,7 @@ fn reply(stream: &TcpStream, ok: bool, count: usize) {
 }
 
 fn send_line(addr: SocketAddr, line: &str) -> Result<bool, String> {
-    let target = SocketAddr::new(addr.ip(), SERVICE_PORT);
+    let target = addr;
     let mut stream = TcpStream::connect_timeout(&target, Duration::from_millis(1200))
         .map_err(|err| format!("连接 {target} 失败：{err}"))?;
     let _ = stream.set_read_timeout(Some(Duration::from_millis(2500)));
@@ -392,14 +489,16 @@ fn send_line(addr: SocketAddr, line: &str) -> Result<bool, String> {
 fn bind_listener(port: u16) -> Result<TcpListener, String> {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))
         .map_err(|err| format!("创建套接字失败：{err}"))?;
+    // 只开 SO_REUSEADDR（重启时不必等 TIME_WAIT），刻意不开 SO_REUSEPORT：
+    // 一旦允许两个实例同时监听，内核会把连接分给别的实例——旧版本还在菜单栏
+    // 里跑着时，推过去的数据就被那个"不认识当前房间"的进程静默拒绝，
+    // 表现正是"发现了设备却一条也同步不过去"。
     socket
         .set_reuse_address(true)
         .map_err(|err| format!("设置端口复用失败：{err}"))?;
-    #[cfg(unix)]
-    let _ = socket.set_reuse_port(true);
     socket
         .bind(&SocketAddr::from(([0, 0, 0, 0], port)).into())
-        .map_err(|err| format!("绑定端口 {port} 失败：{err}"))?;
+        .map_err(|_err| format!("传输端口 {port} 被占用，可能还有另一个 Xpaste 在运行（旧版本没退出）"))?;
     socket
         .listen(64)
         .map_err(|err| format!("监听端口 {port} 失败：{err}"))?;
@@ -407,6 +506,19 @@ fn bind_listener(port: u16) -> Result<TcpListener, String> {
 }
 
 // ── UDP 发现 ──────────────────────────────────────────────────
+
+/// 这个地址是不是本机自己的。
+///
+/// 回环地址直接算本机；其余按网卡地址比对——同机多实例发出的广播会带上网卡 IP
+/// （macOS 的同机广播不回环到监听端，但显式单播和组播回环会），两者都要挡住。
+fn is_local_ip(ip: std::net::IpAddr) -> bool {
+    if ip.is_loopback() {
+        return true;
+    }
+    if_addrs::get_if_addrs()
+        .map(|interfaces| interfaces.into_iter().any(|iface| iface.ip() == ip))
+        .unwrap_or(false)
+}
 
 /// 宣告要发往的地址。
 ///
@@ -440,11 +552,9 @@ fn discovery_loop() -> Result<(), String> {
     socket
         .set_reuse_address(true)
         .map_err(|err| format!("设置端口复用失败：{err}"))?;
-    #[cfg(unix)]
-    let _ = socket.set_reuse_port(true);
     socket
         .bind(&SocketAddr::from(([0, 0, 0, 0], DISCOVERY_PORT)).into())
-        .map_err(|err| format!("绑定发现端口失败：{err}"))?;
+        .map_err(|_err| format!("发现端口 {DISCOVERY_PORT} 被占用，可能还有另一个 Xpaste 在运行"))?;
     // 组播在部分网络（虚拟机、关掉 IGMP 的 AP）会直接 "No route to host"，
     // 所以它能加入就加入，发不出去也不影响：真正的发现靠下面的子网广播。
     let _ = socket.join_multicast_v4(&GROUP, &Ipv4Addr::UNSPECIFIED);
@@ -497,6 +607,13 @@ fn discovery_loop() -> Result<(), String> {
                     continue;
                 };
                 if packet.op != "announce" || packet.port == 0 {
+                    continue;
+                }
+
+                // 同一台机器上可能同时跑着多个实例（开发版和正式版、或者旧包没退），
+                // 它们会互相收到对方的宣告。不挡掉的话界面会显示"发现 1 台设备"，
+                // 实际对端就是自己——收发永远是 0 条，看起来像同步坏了。
+                if is_local_ip(from.ip()) {
                     continue;
                 }
 
@@ -593,4 +710,110 @@ pub fn lan_sync_pending() -> usize {
 #[tauri::command]
 pub fn lan_sync_error() -> String {
     global().last_error()
+}
+
+/// 探测每个邻居的传输端口，返回逐个结果。
+#[tauri::command]
+pub fn lan_sync_probe() -> Vec<PeerProbe> {
+    global().probe()
+}
+
+/// 本机设备名，供同步记录打上"来自哪台电脑"的标签。
+///
+/// 优先用系统主机名（两台 Mac 默认都叫 "Mac" 就分不清了），拿不到再退回
+/// 平台名。不改主机名的话它是稳定的，用来做标识正合适。
+#[tauri::command]
+pub fn device_label() -> String {
+    let raw = std::env::var("COMPUTERNAME")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| {
+            std::process::Command::new("hostname")
+                .output()
+                .ok()
+                .and_then(|out| String::from_utf8(out.stdout).ok())
+        })
+        .unwrap_or_default();
+
+    let cleaned = raw.trim().trim_end_matches(".local").trim();
+    let label: String = cleaned.chars().take(24).collect();
+    if label.is_empty() {
+        if cfg!(target_os = "macos") {
+            "Mac".to_string()
+        } else if cfg!(windows) {
+            "PC".to_string()
+        } else {
+            "Device".to_string()
+        }
+    } else {
+        label
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 收端解析与回包的协议自测：同一房间收下、不同房间拒绝。
+    ///
+    /// 这条链路一旦破了，界面表现就是"发现了设备但一条也传不过去"，
+    /// 和用户报的现象完全一样，所以必须有测试盯着。
+    /// 用随机端口而不是 SERVICE_PORT，避免和正在运行的实例抢端口。
+    #[test]
+    fn push_respects_room() {
+        global().configure("room-a", "Tester").unwrap();
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("绑定随机端口");
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(2) {
+                if let Ok(stream) = stream {
+                    handle_conn(stream);
+                }
+            }
+        });
+
+        let record = LanRecord {
+            id: "r1".to_string(),
+            kind: "text".to_string(),
+            iv: "AAAA".to_string(),
+            ct: "BBBB".to_string(),
+            ts: now_ms(),
+        };
+
+        let foreign = serde_json::to_string(&Packet {
+            op: "push".to_string(),
+            room: "room-b".to_string(),
+            device: "Other".to_string(),
+            port: SERVICE_PORT,
+            iid: String::new(),
+            items: vec![record.clone()],
+        })
+        .unwrap();
+        assert_eq!(
+            send_line(addr, &foreign),
+            Ok(false),
+            "房间不一致的记录必须被拒绝"
+        );
+
+        let same = serde_json::to_string(&Packet {
+            op: "push".to_string(),
+            room: "room-a".to_string(),
+            device: "Other".to_string(),
+            port: SERVICE_PORT,
+            iid: String::new(),
+            items: vec![record.clone()],
+        })
+        .unwrap();
+        assert_eq!(send_line(addr, &same), Ok(true), "同房间的记录必须被接收");
+
+        let taken = global().take();
+        assert_eq!(taken.len(), 1, "收件箱里应当正好有一条");
+        assert_eq!(taken[0].id, "r1");
+    }
+
+    #[test]
+    fn device_label_is_not_empty() {
+        assert!(!device_label().trim().is_empty());
+    }
 }

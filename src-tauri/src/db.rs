@@ -60,12 +60,14 @@ pub async fn init_db(db_path: &Path) -> Result<SqlitePool, sqlx::Error> {
       image_height INTEGER,
       created_at INTEGER NOT NULL,
       copy_count INTEGER NOT NULL DEFAULT 1,
-      content_hash TEXT
+      content_hash TEXT,
+      source_device TEXT
     )",
     )
     .execute(&pool)
     .await?;
     migrate_duplicate_records(&pool).await?;
+    migrate_source_device(&pool).await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_clipboard_items_created_at
          ON clipboard_items(created_at DESC)",
@@ -107,7 +109,8 @@ pub async fn init_db(db_path: &Path) -> Result<SqlitePool, sqlx::Error> {
       image_height INTEGER,
       copy_count INTEGER NOT NULL DEFAULT 1,
       created_at INTEGER NOT NULL,
-      favorited_at INTEGER NOT NULL
+      favorited_at INTEGER NOT NULL,
+      source_device TEXT
     )",
     )
     .execute(&pool)
@@ -126,6 +129,27 @@ pub async fn init_db(db_path: &Path) -> Result<SqlitePool, sqlx::Error> {
     .await?;
 
     Ok(pool)
+}
+
+/// 给老库补上「来源设备」列。
+///
+/// 新库建表时已经带上该列，这里只处理升级上来的库：逐表查一次 PRAGMA，
+/// 缺了才 ALTER，重复执行没有副作用。
+async fn migrate_source_device(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    for table in ["clipboard_items", "favorites"] {
+        let columns = sqlx::query_as::<_, (i64, String, String, i64, Option<String>, i64)>(
+            &format!("PRAGMA table_info({table})"),
+        )
+        .fetch_all(pool)
+        .await?;
+        if columns.iter().any(|column| column.1 == "source_device") {
+            continue;
+        }
+        sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN source_device TEXT"))
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
 }
 
 /// 首次升级时合并历史重复内容，并为后续记录补充去重字段。
@@ -259,7 +283,7 @@ pub async fn list_items(
     let rows = sqlx::query_as::<_, ClipboardItemSummaryRow>(
         "SELECT id, format, category, substr(text, 1, 4096) AS text,
             substr(html, 1, 4096) AS html, file_path, color, image_width, image_height, created_at,
-            copy_count,
+            copy_count, source_device,
             EXISTS(SELECT 1 FROM favorites f WHERE f.content_hash = clipboard_items.content_hash)
               AS favorited
      FROM clipboard_items
@@ -282,7 +306,7 @@ pub async fn search_items(
     let rows = sqlx::query_as::<_, ClipboardItemSummaryRow>(
         "SELECT id, format, category, substr(text, 1, 4096) AS text,
             substr(html, 1, 4096) AS html, file_path, color, image_width, image_height, created_at,
-            copy_count,
+            copy_count, source_device,
             EXISTS(SELECT 1 FROM favorites f WHERE f.content_hash = clipboard_items.content_hash)
               AS favorited
      FROM clipboard_items
@@ -323,7 +347,7 @@ pub async fn list_items_by_date_range(
     let rows = sqlx::query_as::<_, ClipboardItemSummaryRow>(
         "SELECT id, format, category, substr(text, 1, 4096) AS text,
             substr(html, 1, 4096) AS html, file_path, color, image_width, image_height, created_at,
-            copy_count,
+            copy_count, source_device,
             EXISTS(SELECT 1 FROM favorites f WHERE f.content_hash = clipboard_items.content_hash)
               AS favorited
      FROM clipboard_items
@@ -351,7 +375,7 @@ pub async fn search_items_by_date_range(
     let rows = sqlx::query_as::<_, ClipboardItemSummaryRow>(
         "SELECT id, format, category, substr(text, 1, 4096) AS text,
             substr(html, 1, 4096) AS html, file_path, color, image_width, image_height, created_at,
-            copy_count,
+            copy_count, source_device,
             EXISTS(SELECT 1 FROM favorites f WHERE f.content_hash = clipboard_items.content_hash)
               AS favorited
      FROM clipboard_items
@@ -464,8 +488,9 @@ pub async fn insert_favorite(
     let result = sqlx::query(
         "INSERT OR IGNORE INTO favorites (
         content_hash, format, category, text, html, file_path, color, image,
-        image_width, image_height, copy_count, created_at, favorited_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+        image_width, image_height, copy_count, created_at, favorited_at, source_device
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?,
+        (SELECT source_device FROM clipboard_items WHERE content_hash = ? LIMIT 1))",
     )
     .bind(content_hash)
     .bind(&row.format)
@@ -479,6 +504,7 @@ pub async fn insert_favorite(
     .bind(row.image_height)
     .bind(created_at)
     .bind(favorited_at)
+    .bind(content_hash)
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)
@@ -539,7 +565,7 @@ pub async fn list_favorites(
     let rows = sqlx::query_as::<_, FavoriteSummaryRow>(
         "SELECT id, format, category, substr(text, 1, 4096) AS text,
             substr(html, 1, 4096) AS html, file_path, color, image_width, image_height,
-            copy_count, favorited_at
+            copy_count, favorited_at, source_device
      FROM favorites
      WHERE (? IS NULL OR format = ?)
      ORDER BY favorited_at DESC
@@ -564,7 +590,7 @@ pub async fn search_favorites(
     let rows = sqlx::query_as::<_, FavoriteSummaryRow>(
         "SELECT id, format, category, substr(text, 1, 4096) AS text,
             substr(html, 1, 4096) AS html, file_path, color, image_width, image_height,
-            copy_count, favorited_at
+            copy_count, favorited_at, source_device
      FROM favorites
      WHERE (? IS NULL OR format = ?)
        AND (text LIKE ? OR html LIKE ? OR file_path LIKE ? OR color LIKE ?)
@@ -636,6 +662,15 @@ pub async fn sync_export_items(
 /// 用 `INSERT OR IGNORE` 撞 content_hash 唯一索引，只保留"新内容"。
 /// 刻意不累加 copy_count：对端的一条记录在本机第一次出现时复制次数应当是 1，
 /// 而不是把它当成"又复制了一次"，否则两台设备互相同步会把计数越推越高。
+/// 来源设备名做一次规整：去空白、限长、空串当作没有来源。
+fn device_of(item: &SyncImportItem) -> Option<String> {
+    item.device
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(48).collect())
+}
+
 pub async fn sync_insert_remote(
     pool: &SqlitePool,
     item: &SyncImportItem,
@@ -659,8 +694,8 @@ pub async fn sync_insert_remote(
     let result = sqlx::query(
         "INSERT OR IGNORE INTO clipboard_items (
            format, category, text, html, file_path, color, image,
-           image_width, image_height, created_at, copy_count, content_hash
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+           image_width, image_height, created_at, copy_count, content_hash, source_device
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&new_item.format)
     .bind(&new_item.category)
@@ -674,6 +709,7 @@ pub async fn sync_insert_remote(
     .bind(new_item.created_at)
     .bind(copy_count)
     .bind(&content_hash)
+    .bind(device_of(item))
     .execute(pool)
     .await?;
 

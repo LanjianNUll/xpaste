@@ -1129,7 +1129,9 @@ fn main() {
             lan_sync::lan_sync_publish,
             lan_sync::lan_sync_take,
             lan_sync::lan_sync_pending,
-            lan_sync::lan_sync_error
+            lan_sync::lan_sync_error,
+            lan_sync::lan_sync_probe,
+            lan_sync::device_label
         ])
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .run(tauri::generate_context!());

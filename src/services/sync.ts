@@ -55,10 +55,25 @@ const PUSH_MAX_BYTES = 8 * 1024 * 1024;
 /** 首次开启同步时只回推最近 7 天，避免把几年的历史一次性灌进中继。 */
 const INITIAL_BACKFILL_MS = 7 * 24 * 3600 * 1000;
 
+/**
+ * 同步方向。
+ *
+ * - `both`：双向，默认
+ * - `send`：只把本机内容发出去，不接收对端
+ * - `receive`：只接收对端内容，不把本机内容发出去
+ *
+ * 两种单向模式都**不推进另一侧的水位**：只收时 `pushedUpTo` 原地不动，
+ * 切回双向会把这段时间攒下的本地内容补发出去；只发时 `cursor` 不动，
+ * 切回双向会补拉这段时间对端产生的内容。不会悄悄丢东西。
+ */
+export type SyncMode = "both" | "send" | "receive";
+
 export interface SyncConfig {
   enabled: boolean;
   /** 同步码：6 位数字（空字符串表示还没建过房间） */
   code: string;
+  /** 同步方向，默认双向 */
+  mode: SyncMode;
   /** 中继地址，可以带 ?sharecode= */
   relay: string;
   /**
@@ -91,6 +106,15 @@ export interface SyncStatus {
   lastError: string;
   /** 局域网里发现了几个同房间设备（0 表示没有对端，或当前走的是中继） */
   lanPeers: number;
+  /** 邻居设备名，用来在状态行里说清"连上的是谁" */
+  lanPeerNames: string[];
+  /**
+   * 探不通的邻居说明：发现靠广播、传输走 TCP，两者可能一个通一个不通，
+   * 界面上必须把"看得见但传不过去"单独说出来。
+   */
+  lanUnreachable: string[];
+  /** 这一轮收到但解不开的条数：不为 0 通常意味着两台同步码其实不一致 */
+  skipped: number;
 }
 
 interface Keys {
@@ -151,6 +175,7 @@ function defaultConfig(): SyncConfig {
   return {
     enabled: false,
     code: "",
+    mode: "both",
     relay: DEFAULT_RELAY,
     lanOnly: false,
     cursor: 0,
@@ -434,6 +459,7 @@ async function openRecord(keys: Keys, record: SealedRecord) {
     image?: string | null;
     createdAt?: number;
     copyCount?: number;
+    device?: string | null;
   };
   return {
     format: payload.format ?? "text",
@@ -444,7 +470,9 @@ async function openRecord(keys: Keys, record: SealedRecord) {
     filePath: payload.filePath ?? null,
     image: payload.image ?? null,
     createdAt: payload.createdAt ?? record.ts ?? Date.now(),
-    copyCount: payload.copyCount ?? 1
+    copyCount: payload.copyCount ?? 1,
+    // 来源设备名参与加密，落库后列表上就能标出"这条来自哪台电脑"
+    device: payload.device ?? null
   };
 }
 
@@ -517,7 +545,10 @@ let status: SyncStatus = {
   lastPulled: 0,
   lastPushed: 0,
   lastError: "",
-  lanPeers: 0
+  lanPeers: 0,
+  lanPeerNames: [],
+  lanUnreachable: [],
+  skipped: 0
 };
 
 function setStatus(patch: Partial<SyncStatus>) {
@@ -595,23 +626,36 @@ async function pushOnce(config: SyncConfig, keys: Keys): Promise<number> {
   return items.length;
 }
 
-/** 解密并入库一批记录，返回解开的条数（去重交给数据库的 content_hash）。 */
-async function importRecords(keys: Keys, records: SealedRecord[]): Promise<number> {
-  if (records.length === 0) return 0;
+/**
+ * 解密并入库一批记录。
+ *
+ * 返回解开多少条、跳过多少条：跳过数不为 0 时要让用户看见，
+ * 否则"收到了却一条也没进来"看起来和"什么都没收到"一模一样。
+ */
+async function importRecords(
+  keys: Keys,
+  records: SealedRecord[]
+): Promise<{ imported: number; skipped: number }> {
+  if (records.length === 0) return { imported: 0, skipped: 0 };
   const incoming = [];
+  let skipped = 0;
   for (const record of records) {
     try {
       incoming.push(await openRecord(keys, record));
     } catch {
       // 单条解不开（多半是别的版本写的）就跳过，不能让一条坏记录卡住整轮同步
+      skipped += 1;
     }
   }
-  if (incoming.length === 0) return 0;
+  if (incoming.length === 0) return { imported: 0, skipped };
   await invoke<number>("sync_import_items", { items: incoming });
-  return incoming.length;
+  return { imported: incoming.length, skipped };
 }
 
-async function pullOnce(config: SyncConfig, keys: Keys): Promise<number> {
+async function pullOnce(
+  config: SyncConfig,
+  keys: Keys
+): Promise<{ imported: number; skipped: number }> {
   const result = await request(
     config.relay,
     `/api/pull?room=${encodeURIComponent(keys.roomId)}&since=${config.cursor}`,
@@ -619,11 +663,11 @@ async function pullOnce(config: SyncConfig, keys: Keys): Promise<number> {
   );
 
   const records: RemoteRecord[] = Array.isArray(result?.items) ? result.items : [];
-  await importRecords(keys, records);
+  const { imported, skipped } = await importRecords(keys, records);
 
   const nextCursor = Number(result?.seq ?? config.cursor) || config.cursor;
   saveConfig({ cursor: nextCursor });
-  return records.length;
+  return { imported, skipped };
 }
 
 // ── 局域网直连 ────────────────────────────────────────────────
@@ -639,6 +683,45 @@ async function lanPeersOf(config: SyncConfig, keys: Keys): Promise<LanPeer[]> {
   return invoke<LanPeer[]>("lan_sync_peers");
 }
 
+interface LanProbe {
+  addr: string;
+  device: string;
+  ok: boolean;
+  error: string;
+}
+
+/** 探测结果缓存：握手本身很轻，但没必要每 5 秒一轮都做 */
+let lastProbeAt = 0;
+let lastProbe: LanProbe[] = [];
+
+/** 把底层错误翻成用户能行动的说法 */
+function explainProbeError(raw: string): string {
+  const text = raw || "";
+  if (/refused|拒绝/i.test(text)) return "对端端口拒绝连接，可能对方没开同步或防火墙拦了";
+  if (/timed? ?out|超时/i.test(text)) return "连接超时，多半是防火墙或网络隔离（AP 隔离）";
+  if (/unreachable|No route|网络不可达/i.test(text)) return "网络不可达，两台设备可能不在同一网段";
+  if (/拒绝接收/.test(text)) return "被对端拒绝，两台的同步码可能不一致";
+  return text || "连接失败";
+}
+
+/**
+ * 试探每个邻居的传输端口。
+ *
+ * 发现是 UDP 广播、传输是 TCP，两者完全独立：能收到宣告不代表连得上，
+ * 这正是"显示 1 台设备却同步 0 条"最常见的成因。
+ */
+async function probePeers(peers: LanPeer[]): Promise<LanProbe[]> {
+  if (peers.length === 0) {
+    lastProbeAt = 0;
+    lastProbe = [];
+    return [];
+  }
+  if (Date.now() - lastProbeAt < 20_000) return lastProbe;
+  lastProbeAt = Date.now();
+  lastProbe = await invoke<LanProbe[]>("lan_sync_probe").catch(() => []);
+  return lastProbe;
+}
+
 /**
  * 跑一轮局域网同步：先把收件箱里对端推来的记录入库，再把本地新增广播出去。
  *
@@ -647,18 +730,35 @@ async function lanPeersOf(config: SyncConfig, keys: Keys): Promise<LanPeer[]> {
  */
 async function lanRound(config: SyncConfig, keys: Keys): Promise<void> {
   const peers = await lanPeersOf(config, keys);
+  const probes = await probePeers(peers);
+  const unreachable = probes
+    .filter((probe) => !probe.ok)
+    .map((probe) => `${probe.device} · ${probe.addr.split(":")[0]}：${explainProbeError(probe.error)}`);
 
-  const inbox = await invoke<LanRecord[]>("lan_sync_take");
-  const pulled = await importRecords(keys, inbox);
+  // 只发送时把收件箱原样留着不动：这里取走就等于承认"已接收"，
+  // 切回双向后那些内容就再也补不回来了。
+  let pulled = 0;
+  let skipped = 0;
+  if (config.mode !== "send") {
+    const inbox = await invoke<LanRecord[]>("lan_sync_take");
+    const result = await importRecords(keys, inbox);
+    pulled = result.imported;
+    skipped = result.skipped;
+  }
 
   let pushed = 0;
-  if (peers.length > 0) {
+  if (config.mode !== "receive" && peers.length > 0) {
     const { items, watermark } = await collectSealed(config, keys);
     if (items.length > 0) {
       const accepted = await invoke<number>("lan_sync_publish", { items });
       if (accepted > 0) {
         pushed = items.length;
         if (watermark !== config.pushedUpTo) saveConfig({ pushedUpTo: watermark });
+      } else {
+        // 一个设备都没收下：优先用探测到的具体原因，比"发出 0 条"有用得多
+        const reason = await invoke<string>("lan_sync_error").catch(() => "");
+        const detail = unreachable[0] || explainProbeError(reason);
+        throw new Error(`发送失败：${detail}`);
       }
     }
   }
@@ -671,7 +771,10 @@ async function lanRound(config: SyncConfig, keys: Keys): Promise<void> {
     lastPulled: pulled,
     lastPushed: pushed,
     lastError: "",
-    lanPeers: peers.length
+    lanPeers: peers.length,
+    lanPeerNames: peers.map((peer) => peer.device || "设备"),
+    lanUnreachable: unreachable,
+    skipped
   });
 }
 
@@ -684,13 +787,21 @@ async function relayRound(config: SyncConfig, keys: Keys): Promise<void> {
   });
 
   let pushed = 0;
-  // 一次最多推 3 批，避免首次启用时把界面卡在长时间的网络往返里
-  for (let round = 0; round < 3; round += 1) {
-    const count = await pushOnce(loadConfig(), keys);
-    pushed += count;
-    if (count === 0) break;
+  if (config.mode !== "receive") {
+    // 一次最多推 3 批，避免首次启用时把界面卡在长时间的网络往返里
+    for (let round = 0; round < 3; round += 1) {
+      const count = await pushOnce(loadConfig(), keys);
+      pushed += count;
+      if (count === 0) break;
+    }
   }
-  const pulled = await pullOnce(loadConfig(), keys);
+  let pulled = 0;
+  let skipped = 0;
+  if (config.mode !== "send") {
+    const result = await pullOnce(loadConfig(), keys);
+    pulled = result.imported;
+    skipped = result.skipped;
+  }
 
   const now = Date.now();
   saveConfig({ lastSyncAt: now, lastError: "", lastPulled: pulled, lastPushed: pushed });
@@ -700,7 +811,10 @@ async function relayRound(config: SyncConfig, keys: Keys): Promise<void> {
     lastPulled: pulled,
     lastPushed: pushed,
     lastError: "",
-    lanPeers: 0
+    lanPeers: 0,
+    lanPeerNames: [],
+    lanUnreachable: [],
+    skipped
   });
 }
 
@@ -746,8 +860,25 @@ export async function syncNow(): Promise<SyncStatus> {
   return status;
 }
 
+/**
+ * 设备名：早期版本写死 "Mac"/"PC"，同一平台的两台设备在列表里分不清。
+ * 这里一次性升级成主机名（Rust 侧取），失败就沿用原值。
+ */
+let deviceNameResolved = false;
+export async function ensureDeviceName(): Promise<string> {
+  const current = loadConfig().deviceName;
+  if (deviceNameResolved) return current;
+  deviceNameResolved = true;
+  if (current && !/^(Mac|PC|Device)$/.test(current)) return current;
+  const label = await invoke<string>("device_label").catch(() => "");
+  if (!label || label === current) return current;
+  saveConfig({ deviceName: label });
+  return label;
+}
+
 /** 启用同步：没有同步码时先生成一个，然后立刻同步一次。 */
 export async function enableSync(code?: string): Promise<void> {
+  await ensureDeviceName();
   const current = loadConfig();
   const nextCode = code ?? current.code ?? "";
   const normalized = nextCode ? normalizeCode(nextCode) : generateCode();
@@ -805,6 +936,8 @@ export function rotateCode(): string {
 const POLL_INTERVAL_MS = 5000;
 
 export function startSync(): void {
+  // 设备名要在第一轮同步之前定下来：它会写进每条加密记录里
+  void ensureDeviceName();
   const config = loadConfig();
   if (!config.enabled || !config.code) {
     stopSync();
@@ -832,7 +965,7 @@ export function stopSync(): void {
   void invoke("lan_sync_stop").catch(() => {
     // 命令不可用（例如浏览器里调试）时忽略，轮询停掉就够了
   });
-  setStatus({ running: false, busy: false, lanPeers: 0 });
+  setStatus({ running: false, busy: false, lanPeers: 0, lanPeerNames: [], lanUnreachable: [], skipped: 0 });
 }
 
 /**
@@ -847,6 +980,20 @@ export function setLanOnly(enabled: boolean): SyncConfig {
     void syncNow();
   } else {
     void invoke("lan_sync_stop").catch(() => {});
+    void syncNow();
+  }
+  return next;
+}
+
+/**
+ * 切换同步方向，立刻跑一轮让界面反映新方向。
+ *
+ * 这里刻意不动水位和游标：只收期间不推进发送水位，切回双向时这段时间攒下的
+ * 本地内容会自动补发；只发期间不推进接收游标，切回双向会补拉对端内容。
+ */
+export function setSyncMode(mode: SyncMode): SyncConfig {
+  const next = saveConfig({ mode, lastError: "" });
+  if (next.enabled) {
     void syncNow();
   }
   return next;

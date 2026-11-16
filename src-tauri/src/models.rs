@@ -31,6 +31,8 @@ pub struct ClipboardItemSummaryRow {
     pub created_at: i64,
     pub copy_count: i64,
     pub favorited: bool,
+    /// 同步进来的记录会带上来源设备名；本机复制的内容为 None
+    pub source_device: Option<String>,
 }
 
 /// 收藏列表行：favorited_at 映射到 ClipboardItem.created_at 用于展示。
@@ -47,6 +49,8 @@ pub struct FavoriteSummaryRow {
     pub image_height: Option<i64>,
     pub copy_count: i64,
     pub favorited_at: i64,
+    /// 收藏时一并带过来的来源设备名，本机内容为 None
+    pub source_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,6 +68,7 @@ pub struct ClipboardItem {
     pub created_at: i64,
     pub copy_count: i64,
     pub favorited: bool,
+    pub source_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -119,6 +124,7 @@ impl ClipboardItem {
             created_at: row.created_at,
             copy_count: row.copy_count,
             favorited: row.favorited,
+            source_device: row.source_device,
         }
     }
 
@@ -137,6 +143,7 @@ impl ClipboardItem {
             created_at: row.favorited_at,
             copy_count: row.copy_count,
             favorited: true,
+            source_device: row.source_device,
         }
     }
 }
@@ -267,6 +274,9 @@ pub struct SyncImportItem {
     pub created_at: i64,
     #[serde(default)]
     pub copy_count: Option<i64>,
+    /// 发送方设备名，解密后由前端带回来，落库用于在列表里标注来源
+    #[serde(default)]
+    pub device: Option<String>,
 }
 
 pub fn encode_png(row: ClipboardItemRow, max_dimension: Option<u32>) -> Option<String> {

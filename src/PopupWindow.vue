@@ -907,6 +907,11 @@ watch(customDate, () => {
             </button>
             <!-- 收藏快照不参与复制计数，徽标只在全部模式下展示 -->
             <span v-if="!favoritesOnly" class="copy-count">× {{ item.copyCount }}</span>
+            <span
+              v-if="item.sourceDevice"
+              class="source-device"
+              :title="`这一条来自 ${item.sourceDevice}`"
+            >{{ item.sourceDevice }}</span>
             <span>{{ formatTime(item.createdAt) }}</span>
             <!-- 预览入口独立成文字按钮，图片本体不再拦截点击，保证整条 item 点击即粘贴 -->
             <button
@@ -1325,6 +1330,17 @@ min-width: 14px;
 .preview-text-btn:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* 同步来源：和复制次数同处一行，用弱化底色区分，避免和内容抢注意力 */
+.source-device {
+  max-width: 92px;
+  padding: 1px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--hover-bg);
+  border-radius: var(--radius-pill);
 }
 
 .copy-count {

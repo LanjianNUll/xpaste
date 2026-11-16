@@ -205,6 +205,11 @@ watch(query, scheduleLoad);
               >
                 <el-icon :size="14"><StarFilled /></el-icon>
               </button>
+              <span
+                v-if="item.sourceDevice"
+                class="source-device"
+                :title="`这一条来自 ${item.sourceDevice}`"
+              >{{ item.sourceDevice }}</span>
               <span>{{ formatTime(item.createdAt) }}</span>
             </span>
           </div>
@@ -229,6 +234,16 @@ watch(query, scheduleLoad);
 </template>
 
 <style scoped>
+.source-device {
+  max-width: 92px;
+  padding: 1px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--hover-bg);
+  border-radius: var(--radius-pill);
+}
+
 .fav-toolbar {
   display: flex;
   gap: 12px;
