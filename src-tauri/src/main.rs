@@ -6,6 +6,7 @@ mod clipboard;
 mod db;
 mod history_repository;
 mod keyboard_hook;
+mod lan_sync;
 #[cfg(target_os = "macos")]
 mod macos;
 mod models;
@@ -1121,7 +1122,14 @@ fn main() {
             get_dock_visible,
             set_dock_visible,
             sync_export_items,
-            sync_import_items
+            sync_import_items,
+            lan_sync::lan_sync_configure,
+            lan_sync::lan_sync_stop,
+            lan_sync::lan_sync_peers,
+            lan_sync::lan_sync_publish,
+            lan_sync::lan_sync_take,
+            lan_sync::lan_sync_pending,
+            lan_sync::lan_sync_error
         ])
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .run(tauri::generate_context!());

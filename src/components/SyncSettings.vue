@@ -9,6 +9,7 @@ import {
   loadConfig,
   normalizeCode,
   rotateCode,
+  setLanOnly,
   setSyncImages,
   subscribeConfig,
   subscribeStatus,
@@ -64,10 +65,25 @@ const formattedCode = computed(() => {
 /** 中继地址只在构建时注入，缺了它就是截图里那条"同步异常" */
 const relayMissing = computed(() => !config.value.relay);
 
+/** 当前实际走的是哪条通道：手动开了局域网，或者压根没有中继可用 */
+const lanMode = computed(() => config.value.lanOnly || !config.value.relay);
+
 const statusText = computed(() => {
   if (!config.value.enabled) return "未启用";
   if (status.value.busy) return "同步中…";
   if (status.value.lastError) return status.value.lastError;
+
+  if (lanMode.value) {
+    const peers = status.value.lanPeers;
+    if (peers === 0) {
+      return "局域网内还没有发现同房间设备：确认两台设备连的是同一个 Wi-Fi，并填入同一个同步码";
+    }
+    const base = `局域网直连 ${peers} 台设备`;
+    if (!status.value.lastSyncAt) return `${base} · 等待首次同步`;
+    const time = new Date(status.value.lastSyncAt).toLocaleTimeString();
+    return `${base} · 上次同步 ${time} · 收到 ${status.value.lastPulled} 条 · 发出 ${status.value.lastPushed} 条`;
+  }
+
   if (!status.value.lastSyncAt) return "等待首次同步";
   const time = new Date(status.value.lastSyncAt).toLocaleTimeString();
   return `上次同步 ${time} · 收到 ${status.value.lastPulled} 条 · 发出 ${status.value.lastPushed} 条`;
@@ -123,6 +139,14 @@ function handleRotate() {
   ElMessage.success(`已换成新同步码 ${code}，旧设备需要用新码重新加入`);
 }
 
+/** 局域网开关：打开后不再依赖公网，同 Wi-Fi 设备直连 */
+function handleLanToggle(value: boolean) {
+  config.value = setLanOnly(value);
+  ElMessage.success(
+    value ? "已切换为局域网直连，同一 Wi-Fi 下的设备会互相发现" : "已切回中继同步"
+  );
+}
+
 /** 图片同步开关：默认关闭，打开后回溯 7 天并立刻推一轮 */
 function handleImagesToggle(value: boolean) {
   config.value = setSyncImages(value);
@@ -174,6 +198,22 @@ async function handleSyncNow() {
 
       <div class="settings-row">
         <div class="settings-row-main">
+          <div class="settings-row-label">局域网直连</div>
+          <div class="settings-row-desc">
+            不经过中继，只和同一个 Wi-Fi 下的设备互传。中继连不上时打开它，
+            发现设备后每 5 秒自动同步一次
+          </div>
+        </div>
+        <div class="settings-row-control">
+          <el-switch
+            :model-value="config.lanOnly"
+            @update:model-value="handleLanToggle(Boolean($event))"
+          />
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-main">
           <div class="settings-row-label">同步图片</div>
           <div class="settings-row-desc">
             默认只同步文字。开启后图片会压缩到 1280px 再加密上传，流量和等待时间都会明显增加
@@ -203,7 +243,7 @@ async function handleSyncNow() {
       </div>
     </template>
 
-    <div v-if="relayMissing" class="settings-row">
+    <div v-if="relayMissing && !config.lanOnly" class="settings-row">
       <div class="settings-row-main">
         <div class="settings-row-label">同步服务未配置</div>
         <div class="settings-row-desc">

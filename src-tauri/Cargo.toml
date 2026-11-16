@@ -28,6 +28,10 @@ regex = "1"
 image = "0.25"
 base64 = "0.22"
 tokio = { version = "1", features = ["time"] }
+# 局域网发现/传输：组播成员管理需要 setsockopt，std 没有这层能力
+socket2 = "0.6"
+# 列网卡与广播地址：UDP 发现要按网段发广播，组播在部分网络环境发不出去
+if-addrs = "0.13"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

@@ -61,6 +61,14 @@ export interface SyncConfig {
   code: string;
   /** 中继地址，可以带 ?sharecode= */
   relay: string;
+  /**
+   * 只在局域网内直连，不走中继。
+   *
+   * 中继要过公网，偶尔会被网络环境拦掉（WebView 里只报一句 Load failed）。
+   * 打开这个开关后两台同 Wi-Fi 的设备直接互传：发现用 UDP 组播，传输用 TCP，
+   * 内容依旧在本机加密后才发出去。
+   */
+  lanOnly: boolean;
   /** 已经拉到的中继序号 */
   cursor: number;
   /** 已经推上去的本地时间戳水位（created_at） */
@@ -81,6 +89,8 @@ export interface SyncStatus {
   lastPulled: number;
   lastPushed: number;
   lastError: string;
+  /** 局域网里发现了几个同房间设备（0 表示没有对端，或当前走的是中继） */
+  lanPeers: number;
 }
 
 interface Keys {
@@ -103,12 +113,31 @@ interface ExportedItem {
   copyCount: number;
 }
 
-interface RemoteRecord {
-  seq: number;
+/** 两条通道共用的密文记录形状：局域网直连只是不带 `seq`。 */
+interface SealedRecord {
   id: string;
   iv: string;
   ct: string;
   ts: number;
+}
+
+interface RemoteRecord extends SealedRecord {
+  seq: number;
+}
+
+/** 局域网通道的记录形态：与中继记录同构，只是没有 `seq`（直连不需要游标）。 */
+interface LanRecord {
+  id: string;
+  kind: string;
+  iv: string;
+  ct: string;
+  ts: number;
+}
+
+interface LanPeer {
+  addr: string;
+  device: string;
+  lastSeenMs: number;
 }
 
 const enc = new TextEncoder();
@@ -123,6 +152,7 @@ function defaultConfig(): SyncConfig {
     enabled: false,
     code: "",
     relay: DEFAULT_RELAY,
+    lanOnly: false,
     cursor: 0,
     pushedUpTo: 0,
     deviceName: isMacOS ? "Mac" : "PC",
@@ -387,7 +417,7 @@ async function sealItem(keys: Keys, item: ExportedItem, deviceName: string) {
   };
 }
 
-async function openRecord(keys: Keys, record: RemoteRecord) {
+async function openRecord(keys: Keys, record: SealedRecord) {
   const iv = fromBase64(record.iv);
   const plain = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv, additionalData: enc.encode(`${keys.roomId}|${record.id}`) },
@@ -486,7 +516,8 @@ let status: SyncStatus = {
   lastSyncAt: 0,
   lastPulled: 0,
   lastPushed: 0,
-  lastError: ""
+  lastError: "",
+  lanPeers: 0
 };
 
 function setStatus(patch: Partial<SyncStatus>) {
@@ -504,15 +535,22 @@ export function subscribeStatus(listener: (value: SyncStatus) => void): () => vo
   return () => window.removeEventListener("xpaste:sync-status", handler);
 }
 
-async function pushOnce(config: SyncConfig, keys: Keys): Promise<number> {
+/**
+ * 导出并加密一批本地新增内容。
+ *
+ * 中继和局域网两条通道都从这里取数，差别只在怎么发出去；`watermark` 是这批
+ * 里最后一条的时间戳，真正送达之后由调用方推进水位。
+ */
+async function collectSealed(
+  config: SyncConfig,
+  keys: Keys
+): Promise<{ items: LanRecord[]; watermark: number }> {
   const batch = await invoke<ExportedItem[]>("sync_export_items", {
     sinceTs: config.pushedUpTo,
     limit: PUSH_BATCH,
     includeImages: config.syncImages
   });
-  if (batch.length === 0) return 0;
-
-  const items = [];
+  const items: LanRecord[] = [];
   let bytes = 0;
   let watermark = config.pushedUpTo;
   for (const item of batch) {
@@ -523,13 +561,18 @@ async function pushOnce(config: SyncConfig, keys: Keys): Promise<number> {
       continue;
     }
     const sealed = await sealItem(keys, item, config.deviceName);
-    // 单次请求设一个体积上限：图片再多也不至于把中继一次撑爆，
+    // 单次请求设一个体积上限：图片再多也不至于一次撑爆通道，
     // 剩下的留到下一轮（水位只推进到真正处理过的这一条）。
     if (items.length > 0 && bytes + sealed.ct.length > PUSH_MAX_BYTES) break;
     items.push(sealed);
     bytes += sealed.ct.length;
     watermark = item.createdAt;
   }
+  return { items, watermark };
+}
+
+async function pushOnce(config: SyncConfig, keys: Keys): Promise<number> {
+  const { items, watermark } = await collectSealed(config, keys);
 
   // 一批全是不同步的图片时，水位也要往前走，否则会每 5 秒重复导出同一批
   if (items.length === 0) {
@@ -552,6 +595,22 @@ async function pushOnce(config: SyncConfig, keys: Keys): Promise<number> {
   return items.length;
 }
 
+/** 解密并入库一批记录，返回解开的条数（去重交给数据库的 content_hash）。 */
+async function importRecords(keys: Keys, records: SealedRecord[]): Promise<number> {
+  if (records.length === 0) return 0;
+  const incoming = [];
+  for (const record of records) {
+    try {
+      incoming.push(await openRecord(keys, record));
+    } catch {
+      // 单条解不开（多半是别的版本写的）就跳过，不能让一条坏记录卡住整轮同步
+    }
+  }
+  if (incoming.length === 0) return 0;
+  await invoke<number>("sync_import_items", { items: incoming });
+  return incoming.length;
+}
+
 async function pullOnce(config: SyncConfig, keys: Keys): Promise<number> {
   const result = await request(
     config.relay,
@@ -560,33 +619,99 @@ async function pullOnce(config: SyncConfig, keys: Keys): Promise<number> {
   );
 
   const records: RemoteRecord[] = Array.isArray(result?.items) ? result.items : [];
-  if (records.length > 0) {
-    const incoming = [];
-    for (const record of records) {
-      try {
-        incoming.push(await openRecord(keys, record));
-      } catch {
-        // 单条解不开（多半是别的版本写的）就跳过，不能让一条坏记录卡住整轮同步
-      }
-    }
-    if (incoming.length > 0) {
-      await invoke<number>("sync_import_items", { items: incoming });
-    }
-  }
+  await importRecords(keys, records);
 
   const nextCursor = Number(result?.seq ?? config.cursor) || config.cursor;
   saveConfig({ cursor: nextCursor });
   return records.length;
 }
 
-/** 跑一轮完整同步：先推本地新增，再拉对端更新。 */
+// ── 局域网直连 ────────────────────────────────────────────────
+
+/**
+ * 告诉 Rust 当前房间，并取回在线邻居。
+ *
+ * 每次都调一次而不是只在开启时调：换同步码后房间号会变，Rust 侧只做赋值，
+ * 重复调用不重启监听、不会抢端口。
+ */
+async function lanPeersOf(config: SyncConfig, keys: Keys): Promise<LanPeer[]> {
+  await invoke("lan_sync_configure", { room: keys.roomId, device: config.deviceName });
+  return invoke<LanPeer[]>("lan_sync_peers");
+}
+
+/**
+ * 跑一轮局域网同步：先把收件箱里对端推来的记录入库，再把本地新增广播出去。
+ *
+ * 没有邻居时不推进水位——宁可下一轮重复导出，也不能让内容在"当时没人收"的
+ * 情况下被悄悄标记成已发送。
+ */
+async function lanRound(config: SyncConfig, keys: Keys): Promise<void> {
+  const peers = await lanPeersOf(config, keys);
+
+  const inbox = await invoke<LanRecord[]>("lan_sync_take");
+  const pulled = await importRecords(keys, inbox);
+
+  let pushed = 0;
+  if (peers.length > 0) {
+    const { items, watermark } = await collectSealed(config, keys);
+    if (items.length > 0) {
+      const accepted = await invoke<number>("lan_sync_publish", { items });
+      if (accepted > 0) {
+        pushed = items.length;
+        if (watermark !== config.pushedUpTo) saveConfig({ pushedUpTo: watermark });
+      }
+    }
+  }
+
+  const now = Date.now();
+  saveConfig({ lastSyncAt: now, lastError: "", lastPulled: pulled, lastPushed: pushed });
+  setStatus({
+    busy: false,
+    lastSyncAt: now,
+    lastPulled: pulled,
+    lastPushed: pushed,
+    lastError: "",
+    lanPeers: peers.length
+  });
+}
+
+/** 走中继的一轮：建房间 → 推本地新增 → 拉对端更新。 */
+async function relayRound(config: SyncConfig, keys: Keys): Promise<void> {
+  await request(config.relay, "/api/room", {
+    method: "POST",
+    proof: keys.proof,
+    body: JSON.stringify({ room: keys.roomId })
+  });
+
+  let pushed = 0;
+  // 一次最多推 3 批，避免首次启用时把界面卡在长时间的网络往返里
+  for (let round = 0; round < 3; round += 1) {
+    const count = await pushOnce(loadConfig(), keys);
+    pushed += count;
+    if (count === 0) break;
+  }
+  const pulled = await pullOnce(loadConfig(), keys);
+
+  const now = Date.now();
+  saveConfig({ lastSyncAt: now, lastError: "", lastPulled: pulled, lastPushed: pushed });
+  setStatus({
+    busy: false,
+    lastSyncAt: now,
+    lastPulled: pulled,
+    lastPushed: pushed,
+    lastError: "",
+    lanPeers: 0
+  });
+}
+
+/** 跑一轮完整同步：默认走中继，被挡住且有邻居时自动改走局域网。 */
 export async function syncNow(): Promise<SyncStatus> {
   const config = loadConfig();
   if (!config.enabled || !config.code) {
     return status;
   }
-  // 没配中继时不要空转：直接给出可执行的提示，比 fetch 一个空 URL 报错清楚
-  if (!config.relay) {
+  // 没配中继又没开局域网时不要空转：直接给出可执行的提示，比 fetch 空 URL 报错清楚
+  if (!config.lanOnly && !config.relay) {
     const message = "同步服务未配置：构建时没有注入中继地址（VITE_XPASTE_RELAY）";
     saveConfig({ lastError: message });
     setStatus({ busy: false, lastError: message });
@@ -598,30 +723,19 @@ export async function syncNow(): Promise<SyncStatus> {
   setStatus({ busy: true });
   try {
     const keys = await deriveKeys(config.code);
-    await request(config.relay, "/api/room", {
-      method: "POST",
-      proof: keys.proof,
-      body: JSON.stringify({ room: keys.roomId })
-    });
-
-    let pushed = 0;
-    // 一次最多推 3 批，避免首次启用时把界面卡在长时间的网络往返里
-    for (let round = 0; round < 3; round += 1) {
-      const count = await pushOnce(loadConfig(), keys);
-      pushed += count;
-      if (count === 0) break;
+    if (config.lanOnly || !config.relay) {
+      await lanRound(config, keys);
+    } else {
+      try {
+        await relayRound(config, keys);
+      } catch (error) {
+        // 中继被网络环境挡住（WebView 只吐一句 Load failed）时不要直接放弃：
+        // 局域网里如果有同房间设备，就改走直连，用户无感。
+        const peers = await lanPeersOf(config, keys);
+        if (peers.length === 0) throw error;
+        await lanRound(config, keys);
+      }
     }
-    const pulled = await pullOnce(loadConfig(), keys);
-
-    const now = Date.now();
-    saveConfig({ lastSyncAt: now, lastError: "", lastPulled: pulled, lastPushed: pushed });
-    setStatus({
-      busy: false,
-      lastSyncAt: now,
-      lastPulled: pulled,
-      lastPushed: pushed,
-      lastError: ""
-    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     saveConfig({ lastError: message });
@@ -696,8 +810,8 @@ export function startSync(): void {
     stopSync();
     return;
   }
-  // 中继没配就别起轮询，省得每 5 秒白跑一次
-  if (!config.relay) {
+  // 中继没配、也没开局域网时别起轮询，省得每 5 秒白跑一次
+  if (!config.relay && !config.lanOnly) {
     stopSync();
     setStatus({ lastError: "同步服务未配置：构建时没有注入中继地址（VITE_XPASTE_RELAY）" });
     return;
@@ -715,5 +829,25 @@ export function stopSync(): void {
     window.clearInterval(timer);
     timer = null;
   }
-  setStatus({ running: false, busy: false });
+  void invoke("lan_sync_stop").catch(() => {
+    // 命令不可用（例如浏览器里调试）时忽略，轮询停掉就够了
+  });
+  setStatus({ running: false, busy: false, lanPeers: 0 });
+}
+
+/**
+ * 切换「只在局域网内同步」。
+ *
+ * 打开后立刻跑一轮：如果同 Wi-Fi 下已经有设备用同一个同步码，几秒内就能看到
+ * 对方的邻居数变成 1，不需要等下一次轮询。
+ */
+export function setLanOnly(enabled: boolean): SyncConfig {
+  const next = saveConfig({ lanOnly: enabled, lastError: "" });
+  if (enabled) {
+    void syncNow();
+  } else {
+    void invoke("lan_sync_stop").catch(() => {});
+    void syncNow();
+  }
+  return next;
 }

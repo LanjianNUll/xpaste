@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		macOS 15 起，应用访问局域网要先拿到「本地网络」授权，系统弹窗的说明文字
+		取自这个键。缺了它，有的系统版本会直接用一句笼统的默认文案，更糟的情况是
+		广播包被静默丢弃 —— 表现就是「开了局域网同步，但一台设备都发现不了」。
+	-->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Xpaste 需要在同一个 Wi-Fi 下发现你的其他设备，把剪贴板内容加密后直接传过去。内容不会经过任何服务器。</string>
+</dict>
+</plist>
