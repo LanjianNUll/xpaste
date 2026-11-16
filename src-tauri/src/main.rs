@@ -1131,6 +1131,10 @@ fn main() {
             lan_sync::lan_sync_pending,
             lan_sync::lan_sync_error,
             lan_sync::lan_sync_probe,
+            lan_sync::lan_sync_add_peer,
+            lan_sync::lan_sync_remove_peer,
+            lan_sync::lan_sync_local_addrs,
+            lan_sync::lan_sync_diagnose,
             lan_sync::device_label
         ])
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())

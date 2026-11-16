@@ -84,10 +84,26 @@ export interface SyncConfig {
    * 内容依旧在本机加密后才发出去。
    */
   lanOnly: boolean;
+  /**
+   * 手动登记的对端地址（`ip:port`）。
+   *
+   * 自动发现靠 UDP 广播，跨网段、开了 AP 隔离的 Wi-Fi、公司 VLAN 里都可能
+   * 一个包都收不到。这些地址走纯 TCP 直连，不依赖广播——是"一定要同步上"的保底路径。
+   */
+  manualPeers: string[];
   /** 已经拉到的中继序号 */
   cursor: number;
   /** 已经推上去的本地时间戳水位（created_at） */
   pushedUpTo: number;
+  /**
+   * 局域网通道自己的发送水位。
+   *
+   * 为什么要和中继分开：两条通道的可用性相互独立——A 走局域网、B 走中继时，
+   * 共用一个水位就会出现"谁的通道先成功谁把水位推走，另一条通道一条也发不出去"，
+   * 结果是两边都以为自己发了、对方却什么都没收到。分开记之后任一通道通了内容就能到，
+   * 重复投递由入库时的内容指纹去重（`INSERT OR IGNORE`）。
+   */
+  lanPushedUpTo: number;
   deviceName: string;
   /** 是否连图片一起同步：默认关闭，图片压缩后才上传，体积仍然明显大于文字 */
   syncImages: boolean;
@@ -162,6 +178,28 @@ interface LanPeer {
   addr: string;
   device: string;
   lastSeenMs: number;
+  /** 用户手填的地址：不随广播超时被清掉 */
+  manual?: boolean;
+}
+
+/** 一键体检的返回结构，字段与 Rust `LanDiagnosis` 一一对应 */
+export interface LanDiagnosis {
+  started: boolean;
+  roomConfigured: boolean;
+  device: string;
+  servicePort: number;
+  discoveryPort: number;
+  localAddrs: string[];
+  lastError: string;
+  peers: LanProbe[];
+  inbox: number;
+}
+
+/** 手动添加设备的结果：`message` 已经是给用户看的话术 */
+export interface AddPeerResult {
+  addr: string;
+  ok: boolean;
+  message: string;
 }
 
 const enc = new TextEncoder();
@@ -178,8 +216,10 @@ function defaultConfig(): SyncConfig {
     mode: "both",
     relay: DEFAULT_RELAY,
     lanOnly: false,
+    manualPeers: [],
     cursor: 0,
     pushedUpTo: 0,
+    lanPushedUpTo: 0,
     deviceName: isMacOS ? "Mac" : "PC",
     syncImages: false,
     lastSyncAt: 0,
@@ -200,6 +240,14 @@ export function loadConfig(): SyncConfig {
     // 否则升级后仍会一直提示"同步服务未配置"。
     if (!merged.relay && DEFAULT_RELAY) {
       merged.relay = DEFAULT_RELAY;
+    }
+    // 手填地址可能是旧版本/手工改过的脏数据，非数组就当空
+    if (!Array.isArray(merged.manualPeers)) {
+      merged.manualPeers = [];
+    }
+    // 老配置没有独立水位：从"已经推过的位置"接着走，别把几年历史一次性灌出去
+    if (typeof parsed.lanPushedUpTo !== "number" || !parsed.lanPushedUpTo) {
+      merged.lanPushedUpTo = merged.pushedUpTo || Date.now() - INITIAL_BACKFILL_MS;
     }
 
     const normalized = merged.code ? normalizeCode(merged.code) : "";
@@ -569,21 +617,22 @@ export function subscribeStatus(listener: (value: SyncStatus) => void): () => vo
 /**
  * 导出并加密一批本地新增内容。
  *
- * 中继和局域网两条通道都从这里取数，差别只在怎么发出去；`watermark` 是这批
- * 里最后一条的时间戳，真正送达之后由调用方推进水位。
+ * 中继和局域网两条通道都从这里取数，差别只在怎么发出去、以及从哪个水位开始；
+ * `watermark` 是这批里最后一条的时间戳，真正送达之后由调用方推进对应的水位。
  */
 async function collectSealed(
   config: SyncConfig,
-  keys: Keys
+  keys: Keys,
+  since: number
 ): Promise<{ items: LanRecord[]; watermark: number }> {
   const batch = await invoke<ExportedItem[]>("sync_export_items", {
-    sinceTs: config.pushedUpTo,
+    sinceTs: since,
     limit: PUSH_BATCH,
     includeImages: config.syncImages
   });
   const items: LanRecord[] = [];
   let bytes = 0;
-  let watermark = config.pushedUpTo;
+  let watermark = since;
   for (const item of batch) {
     // 图片默认不同步；开启后后端会先压到 1280px 再给 Base64，
     // 体积仍然超限的图片会被丢弃（image 为空），这里一并跳过。
@@ -603,7 +652,7 @@ async function collectSealed(
 }
 
 async function pushOnce(config: SyncConfig, keys: Keys): Promise<number> {
-  const { items, watermark } = await collectSealed(config, keys);
+  const { items, watermark } = await collectSealed(config, keys, config.pushedUpTo);
 
   // 一批全是不同步的图片时，水位也要往前走，否则会每 5 秒重复导出同一批
   if (items.length === 0) {
@@ -680,6 +729,8 @@ async function pullOnce(
  */
 async function lanPeersOf(config: SyncConfig, keys: Keys): Promise<LanPeer[]> {
   await invoke("lan_sync_configure", { room: keys.roomId, device: config.deviceName });
+  // 每轮都重放一次手填地址：Rust 侧换房间/重启后不会丢，重复调用只是改写已有条目
+  await applyManualPeers(config);
   return invoke<LanPeer[]>("lan_sync_peers");
 }
 
@@ -697,7 +748,7 @@ let lastProbe: LanProbe[] = [];
 /** 把底层错误翻成用户能行动的说法 */
 function explainProbeError(raw: string): string {
   const text = raw || "";
-  if (/refused|拒绝/i.test(text)) return "对端端口拒绝连接，可能对方没开同步或防火墙拦了";
+  if (/refused|拒绝/i.test(text)) return "对端端口拒绝连接，对方可能没开「局域网直连」或防火墙拦了";
   if (/timed? ?out|超时/i.test(text)) return "连接超时，多半是防火墙或网络隔离（AP 隔离）";
   if (/unreachable|No route|网络不可达/i.test(text)) return "网络不可达，两台设备可能不在同一网段";
   if (/拒绝接收/.test(text)) return "被对端拒绝，两台的同步码可能不一致";
@@ -722,14 +773,85 @@ async function probePeers(peers: LanPeer[]): Promise<LanProbe[]> {
   return lastProbe;
 }
 
+/** 探测结果带缓存，用户刚加了地址必须立刻看到真实结果，所以手动清一次 */
+function invalidateProbeCache() {
+  lastProbeAt = 0;
+  lastProbe = [];
+}
+
 /**
- * 跑一轮局域网同步：先把收件箱里对端推来的记录入库，再把本地新增广播出去。
+ * 把手填地址灌进 Rust 侧。
+ *
+ * 失败一律忽略：地址可能来自旧网络（换了 Wi-Fi 后 192.168.1.x 不再可达），
+ * 或者本身就是脏数据。让它安静失败，不该拖累整轮同步。
+ */
+async function applyManualPeers(config: SyncConfig): Promise<void> {
+  for (const addr of config.manualPeers ?? []) {
+    await invoke("lan_sync_add_peer", { addr }).catch(() => {});
+  }
+}
+
+/**
+ * 手动添加一台设备，并立刻握一次手。
+ *
+ * 这是"广播发现不到"时的唯一保底手段：只要两台机器能互相路由，
+ * 纯 TCP 直连就一定能传，不受 AP 隔离、跨网段、组播被拦的影响。
+ */
+export async function addManualPeer(input: string): Promise<AddPeerResult> {
+  const config = loadConfig();
+  if (!config.enabled || !config.code) {
+    throw new Error("请先开启同步，再加入设备");
+  }
+  // 先把自己这边的房间和监听配好：否则对端连过来会被拒，探测也只能拿到空结果
+  const keys = await deriveKeys(config.code);
+  await invoke("lan_sync_configure", { room: keys.roomId, device: config.deviceName });
+  const addr = await invoke<string>("lan_sync_add_peer", { addr: input });
+  if (!config.manualPeers.includes(addr)) {
+    saveConfig({ manualPeers: [...config.manualPeers, addr] });
+  }
+  invalidateProbeCache();
+
+  const probes = await invoke<LanProbe[]>("lan_sync_probe").catch(() => []);
+  const mine = probes.find((probe) => probe.addr === addr);
+  if (!mine) {
+    return {
+      addr,
+      ok: false,
+      message: `已添加 ${addr}，但对方还没回应：确认那台设备也打开了「局域网直连」并填入同一个同步码`
+    };
+  }
+  return {
+    addr,
+    ok: mine.ok,
+    message: mine.ok ? `已连上 ${mine.device || addr}` : explainProbeError(mine.error)
+  };
+}
+
+/** 撤销一条手填地址。 */
+export function removeManualPeer(addr: string): SyncConfig {
+  void invoke("lan_sync_remove_peer", { addr }).catch(() => {});
+  invalidateProbeCache();
+  const next = (loadConfig().manualPeers ?? []).filter((item) => item !== addr);
+  return saveConfig({ manualPeers: next });
+}
+
+/** 本机在局域网里的 IPv4 地址，对方要手填的就是它。 */
+export async function lanLocalAddrs(): Promise<string[]> {
+  return invoke<string[]>("lan_sync_local_addrs").catch(() => []);
+}
+
+/** 一键体检：端口、房间、邻居握手逐项查一遍。 */
+export async function lanDiagnose(): Promise<LanDiagnosis | null> {
+  return invoke<LanDiagnosis>("lan_sync_diagnose").catch(() => null);
+}
+
+/**
+ * 跑一轮局域网同步：先把收件箱里对端推来的记录入库，再把本地新增推出去。
  *
  * 没有邻居时不推进水位——宁可下一轮重复导出，也不能让内容在"当时没人收"的
  * 情况下被悄悄标记成已发送。
  */
-async function lanRound(config: SyncConfig, keys: Keys): Promise<void> {
-  const peers = await lanPeersOf(config, keys);
+async function lanRound(config: SyncConfig, keys: Keys, peers: LanPeer[]): Promise<void> {
   const probes = await probePeers(peers);
   const unreachable = probes
     .filter((probe) => !probe.ok)
@@ -748,16 +870,19 @@ async function lanRound(config: SyncConfig, keys: Keys): Promise<void> {
 
   let pushed = 0;
   if (config.mode !== "receive" && peers.length > 0) {
-    const { items, watermark } = await collectSealed(config, keys);
-    if (items.length > 0) {
+    const { items, watermark } = await collectSealed(config, keys, config.lanPushedUpTo);
+    if (items.length === 0) {
+      // 这一批全是"不同步的图片"：水位也得往前走，否则每 5 秒重复导出同一批
+      if (watermark !== config.lanPushedUpTo) saveConfig({ lanPushedUpTo: watermark });
+    } else {
       const accepted = await invoke<number>("lan_sync_publish", { items });
       if (accepted > 0) {
         pushed = items.length;
-        if (watermark !== config.pushedUpTo) saveConfig({ pushedUpTo: watermark });
+        if (watermark !== config.lanPushedUpTo) saveConfig({ lanPushedUpTo: watermark });
       } else {
         // 一个设备都没收下：优先用探测到的具体原因，比"发出 0 条"有用得多
         const reason = await invoke<string>("lan_sync_error").catch(() => "");
-        const detail = unreachable[0] || explainProbeError(reason);
+        const detail = unreachable[0] || explainProbeError(reason) || "对端没有响应";
         throw new Error(`发送失败：${detail}`);
       }
     }
@@ -801,6 +926,15 @@ async function relayRound(config: SyncConfig, keys: Keys): Promise<void> {
     const result = await pullOnce(loadConfig(), keys);
     pulled = result.imported;
     skipped = result.skipped;
+
+    // 只要这台设备以前用过局域网，对端就可能仍在往收件箱里推。
+    // 中继正常时也不能把这些记录晾着，否则用户会看到"对方说发了、这边没有"。
+    const inbox = await invoke<LanRecord[]>("lan_sync_take").catch(() => [] as LanRecord[]);
+    if (inbox.length > 0) {
+      const local = await importRecords(keys, inbox);
+      pulled += local.imported;
+      skipped += local.skipped;
+    }
   }
 
   const now = Date.now();
@@ -837,17 +971,21 @@ export async function syncNow(): Promise<SyncStatus> {
   setStatus({ busy: true });
   try {
     const keys = await deriveKeys(config.code);
-    if (config.lanOnly || !config.relay) {
-      await lanRound(config, keys);
+    // 开关关掉就真的不听不收：只在「局域网直连」打开（或压根没中继）时才拉监听
+    const useRelay = !config.lanOnly && Boolean(config.relay);
+
+    if (!useRelay) {
+      const peers = await lanPeersOf(config, keys).catch(() => [] as LanPeer[]);
+      await lanRound(config, keys, peers);
     } else {
       try {
         await relayRound(config, keys);
       } catch (error) {
         // 中继被网络环境挡住（WebView 只吐一句 Load failed）时不要直接放弃：
         // 局域网里如果有同房间设备，就改走直连，用户无感。
-        const peers = await lanPeersOf(config, keys);
+        const peers = await lanPeersOf(config, keys).catch(() => [] as LanPeer[]);
         if (peers.length === 0) throw error;
-        await lanRound(config, keys);
+        await lanRound(config, keys, peers);
       }
     }
   } catch (error) {
@@ -893,6 +1031,9 @@ export async function enableSync(code?: string): Promise<void> {
     // 换房间等于换身份：游标和水位必须一起归零，否则会把旧房间的进度套到新房间上
     cursor: isNewRoom ? 0 : current.cursor,
     pushedUpTo: isNewRoom ? Date.now() - INITIAL_BACKFILL_MS : current.pushedUpTo,
+    lanPushedUpTo: isNewRoom
+      ? Date.now() - INITIAL_BACKFILL_MS
+      : current.lanPushedUpTo || Date.now() - INITIAL_BACKFILL_MS,
     lastError: ""
   });
   startSync();
@@ -912,10 +1053,10 @@ export function disableSync(): void {
  */
 export function setSyncImages(enabled: boolean): SyncConfig {
   const current = loadConfig();
-  const pushedUpTo = enabled
-    ? Math.min(current.pushedUpTo, Date.now() - INITIAL_BACKFILL_MS)
-    : current.pushedUpTo;
-  const next = saveConfig({ syncImages: enabled, pushedUpTo });
+  const floor = Date.now() - INITIAL_BACKFILL_MS;
+  const pushedUpTo = enabled ? Math.min(current.pushedUpTo, floor) : current.pushedUpTo;
+  const lanPushedUpTo = enabled ? Math.min(current.lanPushedUpTo, floor) : current.lanPushedUpTo;
+  const next = saveConfig({ syncImages: enabled, pushedUpTo, lanPushedUpTo });
   if (enabled && next.enabled) {
     void syncNow();
   }
@@ -925,7 +1066,14 @@ export function setSyncImages(enabled: boolean): SyncConfig {
 /** 换一个全新同步码：旧房间的数据不会跟过来，等于换了身份。 */
 export function rotateCode(): string {
   const code = generateCode();
-  saveConfig({ code, cursor: 0, pushedUpTo: Date.now() - INITIAL_BACKFILL_MS, lastError: "" });
+  const floor = Date.now() - INITIAL_BACKFILL_MS;
+  saveConfig({
+    code,
+    cursor: 0,
+    pushedUpTo: floor,
+    lanPushedUpTo: floor,
+    lastError: ""
+  });
   if (loadConfig().enabled) {
     startSync();
     void syncNow();
@@ -975,7 +1123,15 @@ export function stopSync(): void {
  * 对方的邻居数变成 1，不需要等下一次轮询。
  */
 export function setLanOnly(enabled: boolean): SyncConfig {
-  const next = saveConfig({ lanOnly: enabled, lastError: "" });
+  const current = loadConfig();
+  const floor = Date.now() - INITIAL_BACKFILL_MS;
+  const patch: Partial<SyncConfig> = { lanOnly: enabled, lastError: "" };
+  // 重新打开且水位已经很旧时只补最近 7 天：否则半年历史会被一批批慢慢推过去，
+  // 对端会连续几十分钟在"补充旧内容"
+  if (enabled && (!current.lanPushedUpTo || current.lanPushedUpTo < floor)) {
+    patch.lanPushedUpTo = floor;
+  }
+  const next = saveConfig(patch);
   if (enabled) {
     void syncNow();
   } else {

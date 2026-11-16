@@ -2,15 +2,19 @@
 //!
 //! 为什么要有这条通道：中继走公网，家里/公司网络偶尔会把请求拦掉
 //! （WebView 里表现为 `Load failed`），而两台设备明明就在同一个 Wi-Fi 下。
-//! 这里用「UDP 组播发现 + TCP 直传」把同一房间的设备连起来，不依赖任何服务器。
+//! 这里用「UDP 子网广播发现 + TCP 直传」把同一房间的设备连起来，不依赖任何服务器。
 //!
 //! 分工刻意和前端保持一致：Rust 只搬字节，拿到的是已经用房间密钥加密好的
 //! `{id, iv, ct}`，既解不开内容也不知道明文。房间号是同步码派生出来的哈希，
 //! 只用来做路由过滤——同网段的陌生设备即使收到包，房间对不上也不会收。
 //!
+//! 广播再稳也有收不到的时候（跨网段、AP 隔离、VLAN）。所以还留了一条纯手动的
+//! 路径：`add_peer` 直接登记一个 `ip:port`，跳过发现只走 TCP。只要两台机器能
+//! 互相路由，这条路就能通——它是"一定要同步上"时的保底手段。
+//!
 //! 发现与传输端口固定（见 `DISCOVERY_PORT` / `SERVICE_PORT`），两台设备
-//! 无需任何配置即可互找；`SO_REUSEADDR` + `SO_REUSEPORT` 让同一台机器上
-//! 开发时的多个实例也能共存。
+//! 无需任何配置即可互找。传输端口刻意**独占**绑定：宁可明确报错，也不能让
+//! 两个进程分走连接后各自静默拒绝。
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -35,6 +39,12 @@ const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(3);
 /// 多久没听到某台设备就认为它离线了：留 4 个宣告周期，避免偶发丢包就抖动。
 const PEER_TTL: Duration = Duration::from_secs(12);
 
+/// 探测用：只想知道"通不通"，等太久会拖慢整轮同步，1.5 秒足够。
+const PROBE_CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
+/// 真正推送用：包可能带图片（几百 KB），握手也要给足时间——
+/// 在拥挤的 Wi-Fi 上手握 1 秒多很正常，超时会白白丢掉一整批内容。
+const PUBLISH_CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
+
 /// 收件箱上限：一次同步搬几十条，正常远达不到；超了丢最旧的，防止内存无限涨。
 const INBOX_MAX_RECORDS: usize = 2000;
 const INBOX_MAX_BYTES: usize = 96 * 1024 * 1024;
@@ -53,10 +63,13 @@ pub struct LanRecord {
 
 /// 前端看到的邻居设备。
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LanPeer {
     pub addr: String,
     pub device: String,
     pub last_seen_ms: i64,
+    /// 用户手动填的地址：不参与 TTL 淘汰，广播被挡住时全靠这条链路
+    pub manual: bool,
 }
 
 /// 一次连通性探测的结果。
@@ -70,6 +83,30 @@ pub struct PeerProbe {
     pub device: String,
     pub ok: bool,
     pub error: String,
+}
+
+/// 一键体检的结果。
+///
+/// "同步不了"有五六种完全不同的原因（没开同步、端口被占、广播被拦、防火墙拦入站、
+/// 两台码不一致、本机没有本地网络权限），界面上只显示一句"0 条"根本分不清。
+/// 这里把每一条判据都摆出来，用户（和我们）照着看就知道卡在哪一步。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanDiagnosis {
+    /// 后台线程是否真的起来了（false 基本等于端口被旧版本占着）
+    pub started: bool,
+    pub room_configured: bool,
+    pub device: String,
+    pub service_port: u16,
+    pub discovery_port: u16,
+    /// 本机可被对方填写的地址
+    pub local_addrs: Vec<String>,
+    /// 最近一次失败原因
+    pub last_error: String,
+    /// 逐个邻居的 TCP 握手结果
+    pub peers: Vec<PeerProbe>,
+    /// 收件箱里还没被前端取走的条数
+    pub inbox: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -99,6 +136,8 @@ struct Reply {
 struct Peer {
     device: String,
     last_seen: Instant,
+    /// 手动添加的设备：即使暂时没收到它的宣告也一直保留
+    manual: bool,
 }
 
 struct Inner {
@@ -181,15 +220,65 @@ impl LanSync {
     pub fn peers(&self) -> Vec<LanPeer> {
         let mut inner = self.inner.lock().unwrap();
         inner.prune();
-        inner
+        let mut list: Vec<LanPeer> = inner
             .peers
             .iter()
             .map(|(addr, peer)| LanPeer {
                 addr: addr.clone(),
                 device: peer.device.clone(),
                 last_seen_ms: now_ms() - peer.last_seen.elapsed().as_millis() as i64,
+                manual: peer.manual,
             })
-            .collect()
+            .collect();
+        // 手动填的排前面：出问题时用户最先要看的是自己指定的那条链路
+        list.sort_by(|a, b| b.manual.cmp(&a.manual).then(a.addr.cmp(&b.addr)));
+        list
+    }
+
+    /// 手动登记一台设备。
+    ///
+    /// 为什么需要它：UDP 广播在跨网段、开了 AP 隔离的 Wi-Fi、公司 VLAN 里都可能
+    /// 完全收不到，这时"自动发现"永远 0 台，界面再准也没用。填一个 IP 就走
+    /// 纯 TCP 直连，只要两台机器能互相路由就一定能传——这是保底路径。
+    pub fn add_peer(&self, addr: &str) -> Result<String, String> {
+        let parsed = parse_peer_addr(addr)?;
+        if parsed.ip().is_loopback() {
+            return Err("不能填本机地址，请填另一台电脑的 IP".to_string());
+        }
+        if is_local_ip(parsed.ip()) {
+            return Err("这是本机网卡地址，请填另一台电脑的 IP".to_string());
+        }
+        let mut inner = self.inner.lock().unwrap();
+        let key = parsed.to_string();
+        inner
+            .peers
+            .entry(key.clone())
+            .and_modify(|peer| {
+                peer.manual = true;
+                peer.last_seen = Instant::now();
+            })
+            .or_insert(Peer {
+                device: String::new(),
+                last_seen: Instant::now(),
+                manual: true,
+            });
+        Ok(key)
+    }
+
+    /// 撤销一条手动登记。
+    pub fn remove_peer(&self, addr: &str) -> bool {
+        let Ok(parsed) = parse_peer_addr(addr) else {
+            return false;
+        };
+        let mut inner = self.inner.lock().unwrap();
+        match inner.peers.get_mut(&parsed.to_string()) {
+            Some(peer) if peer.manual => {
+                // 只摘掉"手动"标记；它若还在广播，下一轮会自动以自动发现的身份回来
+                inner.peers.remove(&parsed.to_string());
+                true
+            }
+            _ => false,
+        }
     }
 
     /// 把密文记录推给所有邻居，返回成功接收的设备数。
@@ -230,17 +319,35 @@ impl LanSync {
         };
 
         let mut accepted = 0usize;
-        let mut last_error = String::new();
+        let mut failures: Vec<String> = Vec::new();
         for addr in targets {
-            match send_line(addr, &line) {
-                Ok(true) => accepted += 1,
-                Ok(false) => last_error = "对端拒绝接收".to_string(),
-                Err(err) => last_error = err,
+            // 局域网里第一次握手偶尔会撞上对端 accept 队列满/短暂忙，重试一次
+            // 比直接报"发送失败"划算得多——用户看到的差别是"同步上了"和"又坏了"。
+            let mut result = send_line_with(addr, &line, PUBLISH_CONNECT_TIMEOUT);
+            if result.is_err() {
+                std::thread::sleep(Duration::from_millis(150));
+                result = send_line_with(addr, &line, PUBLISH_CONNECT_TIMEOUT);
+            }
+            match result {
+                Ok(true) => {
+                    accepted += 1;
+                    if let Ok(mut inner) = self.inner.lock() {
+                        if let Some(peer) = inner.peers.get_mut(&addr.to_string()) {
+                            peer.last_seen = Instant::now();
+                        }
+                    }
+                }
+                Ok(false) => failures.push(format!("{addr} 拒绝接收（同步码可能不一致）")),
+                Err(err) => failures.push(format!("{addr} {err}")),
             }
         }
 
         let mut inner = self.inner.lock().unwrap();
-        inner.last_error = if accepted == 0 { last_error } else { String::new() };
+        inner.last_error = if accepted == 0 {
+            failures.join("；")
+        } else {
+            String::new()
+        };
         Ok(accepted)
     }
 
@@ -325,6 +432,31 @@ impl LanSync {
         self.inner.lock().unwrap().last_error.clone()
     }
 
+    /// 体检：把"能不能同步"拆成几个可判断的事实。
+    pub fn diagnose(&self) -> LanDiagnosis {
+        let (room_configured, device, last_error, inbox) = {
+            let inner = self.inner.lock().unwrap();
+            (
+                !inner.room.is_empty(),
+                inner.device.clone(),
+                inner.last_error.clone(),
+                inner.inbox.len(),
+            )
+        };
+        LanDiagnosis {
+            started: self.started.load(Ordering::SeqCst),
+            room_configured,
+            device,
+            service_port: SERVICE_PORT,
+            discovery_port: DISCOVERY_PORT,
+            local_addrs: local_addresses(),
+            last_error,
+            // 没开房间时别去握手，免得对端看到一个空房间的探测
+            peers: if room_configured { self.probe() } else { Vec::new() },
+            inbox,
+        }
+    }
+
     fn ensure_threads(&self) {
         if self.started.load(Ordering::SeqCst) {
             return;
@@ -377,7 +509,19 @@ pub fn global() -> &'static LanSync {
 
 impl Inner {
     fn prune(&mut self) {
-        self.peers.retain(|_, peer| peer.last_seen.elapsed() < PEER_TTL);
+        // 手动登记的地址不按 TTL 淘汰：它存在的意义就是"广播收不到时也能连"，
+        // 如果它自己也被广播的节奏决定生死，这条保底路径就形同虚设。
+        self.peers
+            .retain(|_, peer| peer.manual || peer.last_seen.elapsed() < PEER_TTL);
+    }
+
+    /// 手动登记的设备地址：宣告也要单播给它们，让对端反向认识我们。
+    fn manual_addrs(&self) -> Vec<SocketAddr> {
+        self.peers
+            .iter()
+            .filter(|(_, peer)| peer.manual)
+            .filter_map(|(addr, _)| addr.parse::<SocketAddr>().ok())
+            .collect()
     }
 
     fn push_inbox(&mut self, items: Vec<LanRecord>) {
@@ -465,9 +609,17 @@ fn reply(stream: &TcpStream, ok: bool, count: usize) {
 }
 
 fn send_line(addr: SocketAddr, line: &str) -> Result<bool, String> {
+    send_line_with(addr, line, PROBE_CONNECT_TIMEOUT)
+}
+
+fn send_line_with(
+    addr: SocketAddr,
+    line: &str,
+    connect_timeout: Duration,
+) -> Result<bool, String> {
     let target = addr;
-    let mut stream = TcpStream::connect_timeout(&target, Duration::from_millis(1200))
-        .map_err(|err| format!("连接 {target} 失败：{err}"))?;
+    let mut stream = TcpStream::connect_timeout(&target, connect_timeout)
+        .map_err(|err| format!("连接失败：{err}"))?;
     let _ = stream.set_read_timeout(Some(Duration::from_millis(2500)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(2500)));
     stream
@@ -546,6 +698,44 @@ fn announce_targets() -> Vec<SocketAddr> {
     targets
 }
 
+/// 解析用户手填的对端地址。
+///
+/// 允许 `192.168.1.8`（端口默认给 SERVICE_PORT）和 `192.168.1.8:47832` 两种写法，
+/// 端口写错的情况也留着——总比"格式不对"让人无从下手好。
+fn parse_peer_addr(raw: &str) -> Result<SocketAddr, String> {
+    let text = raw.trim();
+    if text.is_empty() {
+        return Err("请填写对方的 IP 地址".to_string());
+    }
+    if let Ok(addr) = text.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+    match text.parse::<Ipv4Addr>() {
+        Ok(ip) => Ok(SocketAddr::from((ip, SERVICE_PORT))),
+        Err(_) => Err("地址格式不对：应为 192.168.1.8 或 192.168.1.8:47832".to_string()),
+    }
+}
+
+/// 本机在局域网里的 IPv4 地址（对方要填的就是这个）。
+fn local_addresses() -> Vec<String> {
+    let mut list = Vec::new();
+    if let Ok(interfaces) = if_addrs::get_if_addrs() {
+        for interface in interfaces {
+            if interface.is_loopback() {
+                continue;
+            }
+            if let if_addrs::IfAddr::V4(v4) = interface.addr {
+                let ip = v4.ip.to_string();
+                if !list.contains(&ip) {
+                    list.push(ip);
+                }
+            }
+        }
+    }
+    list.sort();
+    list
+}
+
 fn discovery_loop() -> Result<(), String> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
         .map_err(|err| format!("创建发现套接字失败：{err}"))?;
@@ -594,6 +784,11 @@ fn discovery_loop() -> Result<(), String> {
                 for target in announce_targets() {
                     let _ = udp.send_to(payload.as_bytes(), target);
                 }
+                // 手动登记的设备再单播一份：跨网段/AP 隔离时广播出不去，
+                // 但单播只要路由能通就能到，让对端也能反向发现我们。
+                for peer in global().inner.lock().unwrap().manual_addrs() {
+                    let _ = udp.send_to(payload.as_bytes(), SocketAddr::new(peer.ip(), DISCOVERY_PORT));
+                }
             }
             last_announce = Instant::now();
         }
@@ -623,15 +818,23 @@ fn discovery_loop() -> Result<(), String> {
                 }
                 let addr = SocketAddr::new(from.ip(), packet.port).to_string();
                 let is_new = !inner.peers.contains_key(&addr);
+                // 之前手动填过同一台设备：保留 manual 标记，免得下一轮被 TTL 清掉
+                let manual = inner.peers.get(&addr).map(|peer| peer.manual).unwrap_or(false);
+                let device = if packet.device.is_empty() {
+                    inner
+                        .peers
+                        .get(&addr)
+                        .map(|peer| peer.device.clone())
+                        .unwrap_or_default()
+                } else {
+                    packet.device.clone()
+                };
                 inner.peers.insert(
                     addr.clone(),
                     Peer {
-                        device: if packet.device.is_empty() {
-                            "Device".to_string()
-                        } else {
-                            packet.device.clone()
-                        },
+                        device,
                         last_seen: Instant::now(),
+                        manual,
                     },
                 );
                 inner.prune();
@@ -716,6 +919,30 @@ pub fn lan_sync_error() -> String {
 #[tauri::command]
 pub fn lan_sync_probe() -> Vec<PeerProbe> {
     global().probe()
+}
+
+/// 手动登记一台设备（广播发现不到时的保底路径）。返回规范化后的 `ip:port`。
+#[tauri::command]
+pub fn lan_sync_add_peer(addr: String) -> Result<String, String> {
+    global().add_peer(&addr)
+}
+
+/// 撤销一条手动登记。
+#[tauri::command]
+pub fn lan_sync_remove_peer(addr: String) -> bool {
+    global().remove_peer(&addr)
+}
+
+/// 本机在局域网里的地址列表，界面上显示出来方便对方手填。
+#[tauri::command]
+pub fn lan_sync_local_addrs() -> Vec<String> {
+    local_addresses()
+}
+
+/// 一键体检。
+#[tauri::command]
+pub fn lan_sync_diagnose() -> LanDiagnosis {
+    global().diagnose()
 }
 
 /// 本机设备名，供同步记录打上"来自哪台电脑"的标签。
@@ -815,5 +1042,48 @@ mod tests {
     #[test]
     fn device_label_is_not_empty() {
         assert!(!device_label().trim().is_empty());
+    }
+
+    /// 手填地址是"广播被拦"时的唯一保底路径，解析错一次就等于同步不了。
+    #[test]
+    fn parse_peer_addr_accepts_both_forms() {
+        assert_eq!(
+            parse_peer_addr(" 192.168.1.8 ").unwrap().to_string(),
+            format!("192.168.1.8:{SERVICE_PORT}")
+        );
+        assert_eq!(
+            parse_peer_addr("10.0.0.9:47900").unwrap().to_string(),
+            "10.0.0.9:47900"
+        );
+        assert!(parse_peer_addr("").is_err());
+        assert!(parse_peer_addr("mac-mini.local").is_err());
+    }
+
+    /// 手动登记的地址不能被 TTL 淘汰：它本来就是给"收不到广播"的场景兜底的。
+    #[test]
+    fn manual_peer_survives_prune() {
+        let mut inner = Inner::default();
+        inner.peers.insert(
+            "192.168.1.9:47832".to_string(),
+            Peer {
+                device: String::new(),
+                // 超过 PEER_TTL，模拟它没有在广播
+                last_seen: Instant::now() - PEER_TTL - Duration::from_secs(1),
+                manual: true,
+            },
+        );
+        inner.prune();
+        assert!(inner.peers.contains_key("192.168.1.9:47832"));
+
+        inner.peers.insert(
+            "192.168.1.10:47832".to_string(),
+            Peer {
+                device: "Auto".to_string(),
+                last_seen: Instant::now() - PEER_TTL - Duration::from_secs(1),
+                manual: false,
+            },
+        );
+        inner.prune();
+        assert!(!inner.peers.contains_key("192.168.1.10:47832"));
     }
 }

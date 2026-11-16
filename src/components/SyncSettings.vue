@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
-import { CopyDocument, Refresh, Warning } from "@element-plus/icons-vue";
+import { CopyDocument, Refresh, Search, Warning } from "@element-plus/icons-vue";
 import {
+  addManualPeer,
   disableSync,
   enableSync,
   getStatus,
+  lanDiagnose,
+  lanLocalAddrs,
   loadConfig,
   normalizeCode,
+  removeManualPeer,
   rotateCode,
   setLanOnly,
   setSyncImages,
@@ -33,6 +37,13 @@ const status = ref<SyncStatus>(getStatus());
 const joinInput = ref("");
 const busy = ref(false);
 
+/** 手填对端地址 */
+const peerInput = ref("");
+const peerBusy = ref(false);
+const diagBusy = ref(false);
+const localAddrs = ref<string[]>([]);
+const diagnosisText = ref("");
+
 /** 输入时只留数字并自动按 3+3 分组，粘贴带空格的长码也不会被拒 */
 watch(joinInput, (value) => {
   const digits = value.replace(/\D/g, "").slice(0, 6);
@@ -49,6 +60,9 @@ onMounted(() => {
   });
   unsubscribeConfig = subscribeConfig((value) => {
     config.value = value;
+  });
+  void lanLocalAddrs().then((list) => {
+    localAddrs.value = list;
   });
 });
 
@@ -103,7 +117,7 @@ const statusText = computed(() => {
 
   if (lanMode.value) {
     if (status.value.lanPeers === 0) {
-      return "局域网内还没有发现同房间设备：确认两台设备连的是同一个 Wi-Fi，并填入同一个同步码";
+      return "局域网内还没有发现同房间设备：确认两台连的是同一个 Wi-Fi 且同步码一致；自动发现不生效时用下面「手动添加设备」填对方 IP";
     }
     const base = `已发现 ${peerLabel.value}`;
     // 探测通了才算真连上；只看到广播、TCP 连不上时把原因摆出来
@@ -127,6 +141,91 @@ const statusWarning = computed(
     Boolean(unreachableText.value) ||
     Boolean(status.value.skipped)
 );
+
+/** 手填过的对端地址 */
+const manualPeers = computed(() => config.value.manualPeers ?? []);
+
+/** 本机地址：两台互相填的时候，对方要的就是这一串 */
+const localAddrsText = computed(() =>
+  localAddrs.value.length > 0 ? localAddrs.value.join("、") : "未获取到（检查网络连接）"
+);
+
+/** 手动添加一台设备：广播发现不到时的保底路径 */
+async function handleAddPeer() {
+  const addr = peerInput.value.trim();
+  if (!addr) {
+    ElMessage.error("请填写对方的 IP，例如 192.168.1.8");
+    return;
+  }
+  peerBusy.value = true;
+  try {
+    const result = await addManualPeer(addr);
+    config.value = loadConfig();
+    peerInput.value = "";
+    if (result.ok) {
+      ElMessage.success(result.message);
+    } else {
+      ElMessage.warning(result.message);
+    }
+    void syncNow();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "添加失败");
+  } finally {
+    peerBusy.value = false;
+  }
+}
+
+function handleRemovePeer(addr: string) {
+  config.value = removeManualPeer(addr);
+  ElMessage.success(`已移除 ${addr}`);
+}
+
+/** 网络体检：把"到底卡在哪一步"摆出来，别让用户对着 0 条猜 */
+async function handleDiagnose() {
+  diagBusy.value = true;
+  try {
+    localAddrs.value = await lanLocalAddrs();
+    const result = await lanDiagnose();
+    if (!result) {
+      diagnosisText.value = "诊断不可用（桌面端才支持）";
+      return;
+    }
+    if (!result.roomConfigured) {
+      diagnosisText.value = "还没开启同步：先把上面的多设备同步开关打开";
+      return;
+    }
+    if (!result.started) {
+      diagnosisText.value =
+        result.lastError ||
+        `端口 ${result.servicePort} 没能监听，通常是另一个 Xpaste 还在运行，退出旧版本后重试`;
+      return;
+    }
+    if (result.peers.length === 0) {
+      diagnosisText.value = `端口正常（TCP ${result.servicePort} / UDP ${result.discoveryPort}），但没收到任何设备的广播：两台可能不在同一网段，或被路由器隔离。用下面的「手动添加设备」填对方 IP（本机 ${localAddrsText.value}）；macOS 还要在 系统设置 → 隐私与安全性 → 本地网络 里允许 Xpaste，Windows 首次运行要允许防火墙访问`;
+      return;
+    }
+    const failed = result.peers.filter((peer) => !peer.ok);
+    if (failed.length === 0) {
+      diagnosisText.value = `一切正常：和 ${result.peers.length} 台设备都能握手，端口 ${result.servicePort}`;
+      return;
+    }
+    diagnosisText.value = failed
+      .map((peer) => `${peer.device || peer.addr}：${explainReason(peer.error)}`)
+      .join("；");
+  } finally {
+    diagBusy.value = false;
+  }
+}
+
+/** 把 Rust 抛上来的连接错误翻成能照着做的提示 */
+function explainReason(raw: string): string {
+  const text = raw || "";
+  if (/refused|拒绝/i.test(text)) return "对方端口拒绝连接，对方可能没开「局域网直连」或防火墙拦了";
+  if (/timed? ?out|超时/i.test(text)) return "连接超时，多半是防火墙或路由器隔离";
+  if (/unreachable|No route|网络不可达/i.test(text)) return "网络不可达，两台不在同一网段";
+  if (/拒绝接收/.test(text)) return "被对方拒绝，两台的同步码不一致";
+  return text || "连接失败";
+}
 
 async function handleToggle(value: boolean) {
   try {
@@ -264,6 +363,51 @@ async function handleSyncNow() {
         </div>
       </div>
 
+      <div v-if="lanMode" class="settings-row">
+        <div class="settings-row-main">
+          <div class="settings-row-label">手动添加设备</div>
+          <div class="settings-row-desc">
+            自动发现靠 UDP 广播，跨网段、Wi-Fi 开了隔离、公司 VLAN 里都可能收不到。
+            填对方 IP 就走纯 TCP 直连，不依赖广播；两台都填上最稳
+            <div class="sync-self">本机地址：{{ localAddrsText }}</div>
+            <div v-if="manualPeers.length" class="sync-peers">
+              <el-tag
+                v-for="peer in manualPeers"
+                :key="peer"
+                size="small"
+                closable
+                @close="handleRemovePeer(peer)"
+                >{{ peer }}</el-tag
+              >
+            </div>
+          </div>
+        </div>
+        <div class="settings-row-control">
+          <el-input
+            v-model="peerInput"
+            placeholder="192.168.1.8"
+            style="width: 160px"
+            @keyup.enter="handleAddPeer"
+          />
+          <el-button :loading="peerBusy" @click="handleAddPeer">添加</el-button>
+        </div>
+      </div>
+
+      <div v-if="lanMode" class="settings-row">
+        <div class="settings-row-main">
+          <div class="settings-row-label">网络诊断</div>
+          <div class="settings-row-desc">
+            {{
+              diagnosisText ||
+              "点「检查」逐项确认：端口有没有监听起来、房间有没有配上、每台邻居能不能握手"
+            }}
+          </div>
+        </div>
+        <div class="settings-row-control">
+          <el-button :icon="Search" :loading="diagBusy" @click="handleDiagnose">检查</el-button>
+        </div>
+      </div>
+
       <div class="settings-row">
         <div class="settings-row-main">
           <div class="settings-row-label">同步方向</div>
@@ -380,5 +524,13 @@ async function handleSyncNow() {
   margin-left: 6px;
   color: var(--el-color-warning);
   vertical-align: -2px;
+}
+
+/* 手填的设备：一行小标签，一眼看清都连了哪些地址 */
+.sync-peers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
 }
 </style>
