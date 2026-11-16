@@ -981,6 +981,36 @@ pub fn device_label() -> String {
 mod tests {
     use super::*;
 
+    /// 诊断结果直接喂给前端，字段名对不上就是"点检查没反应"。
+    #[test]
+    fn diagnosis_serializes_camel_case() {
+        let diagnosis = LanDiagnosis {
+            started: true,
+            room_configured: true,
+            device: "Tester".to_string(),
+            service_port: SERVICE_PORT,
+            discovery_port: DISCOVERY_PORT,
+            local_addrs: vec!["192.168.1.8".to_string()],
+            last_error: String::new(),
+            peers: Vec::new(),
+            inbox: 0,
+        };
+        let json = serde_json::to_string(&diagnosis).unwrap();
+        assert!(json.contains("\"roomConfigured\""), "{json}");
+        assert!(json.contains("\"servicePort\""), "{json}");
+        assert!(json.contains("\"localAddrs\""), "{json}");
+
+        let peer = LanPeer {
+            addr: "192.168.1.9:47832".to_string(),
+            device: "Other".to_string(),
+            last_seen_ms: 1,
+            manual: true,
+        };
+        let json = serde_json::to_string(&peer).unwrap();
+        assert!(json.contains("\"lastSeenMs\""), "{json}");
+        assert!(json.contains("\"manual\":true"), "{json}");
+    }
+
     /// 收端解析与回包的协议自测：同一房间收下、不同房间拒绝。
     ///
     /// 这条链路一旦破了，界面表现就是"发现了设备但一条也传不过去"，
