@@ -367,8 +367,12 @@ async fn sync_export_items(
     state: State<'_, AppState>,
     since_ts: i64,
     limit: Option<i64>,
+    include_images: Option<bool>,
 ) -> Result<Vec<SyncExportItem>, String> {
-    state.sdk.sync_export(since_ts, limit).await
+    state
+        .sdk
+        .sync_export(since_ts, limit, include_images.unwrap_or(false))
+        .await
 }
 
 /// 多设备同步：接收对端解密后的记录，返回真正新增的条数。

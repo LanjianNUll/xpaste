@@ -6,13 +6,17 @@ import { isMacOS } from "@/services/platform";
  *
  * 设计沿用「一个同步码 = 账号 + 密钥」：
  *
- *   同步码 (32 字节主密钥的 base32)
- *     ├─ room_id = HKDF(master, "xpaste-room-v1")     公开，给中继路由用
- *     ├─ key     = HKDF(master, "xpaste-content-v1")  AES-256-GCM 内容密钥，永不出本机
- *     └─ proof   = HKDF(master, "xpaste-auth-v1")     鉴权，中继只存它的 SHA-256
+ *   同步码 (6 位数字)
+ *     └─ master  = PBKDF2("xpaste-code-v2:<code>", 12 万次)
+ *          ├─ room_id = HKDF(master, "xpaste-room-v1")     公开，给中继路由用
+ *          ├─ key     = HKDF(master, "xpaste-content-v1")  AES-256-GCM 内容密钥，永不出本机
+ *          └─ proof   = HKDF(master, "xpaste-auth-v1")     鉴权，中继只存它的 SHA-256
  *
  * 中继只见到 room_id、密文、IV、时间戳。它既解不开内容，也算不出 proof，
  * 所以没法冒充任何一台设备写入。
+ *
+ * 6 位数字是为了方便在设备间口述/手输；代价是密钥空间只有 100 万，
+ * 因此用 PBKDF2 把每次猜测拖慢，并且同步码等同于密码，不要公开。
  *
  * 为什么加密和 HTTP 放在前端而不是 Rust：WebCrypto 与 fetch 是运行时就有的能力，
  * 省掉在 Rust 侧引入 reqwest / aes-gcm 一整条依赖链，加密实现还能和网页版
@@ -20,6 +24,12 @@ import { isMacOS } from "@/services/platform";
  */
 
 const STORAGE_KEY = "xpaste.sync.v1";
+
+/** 同步码长度：6 位数字，口述和手输都不费劲。 */
+export const CODE_LENGTH = 6;
+
+/** 6 位数字空间小，靠 PBKDF2 迭代把每次猜测拖慢到几十毫秒。 */
+const CODE_ITERATIONS = 120_000;
 
 /**
  * 默认中继地址。
@@ -36,14 +46,18 @@ export const DEFAULT_RELAY = String(import.meta.env.VITE_XPASTE_RELAY ?? "").tri
 
 /** 单次搬运条数与体积上限，与服务端限制对齐。 */
 const PUSH_BATCH = 50;
+/** 拉取是纯文本查询，慢一点就该放弃；推送带图片时要留足上传时间。 */
 const PULL_BATCH_TIMEOUT_MS = 15000;
+const PUSH_BATCH_TIMEOUT_MS = 45000;
+/** 单次推送的密文体积上限：超出就拆到下一轮，避免中继直接拒绝一个大请求。 */
+const PUSH_MAX_BYTES = 8 * 1024 * 1024;
 
 /** 首次开启同步时只回推最近 7 天，避免把几年的历史一次性灌进中继。 */
 const INITIAL_BACKFILL_MS = 7 * 24 * 3600 * 1000;
 
 export interface SyncConfig {
   enabled: boolean;
-  /** 同步码，形如 XP1-XXXX-XXXX-…（空字符串表示还没建过房间） */
+  /** 同步码：6 位数字（空字符串表示还没建过房间） */
   code: string;
   /** 中继地址，可以带 ?sharecode= */
   relay: string;
@@ -52,6 +66,8 @@ export interface SyncConfig {
   /** 已经推上去的本地时间戳水位（created_at） */
   pushedUpTo: number;
   deviceName: string;
+  /** 是否连图片一起同步：默认关闭，图片压缩后才上传，体积仍然明显大于文字 */
+  syncImages: boolean;
   lastSyncAt: number;
   lastError: string;
   lastPulled: number;
@@ -81,6 +97,8 @@ interface ExportedItem {
   html: string | null;
   color: string | null;
   filePath: string | null;
+  /** 图片的 PNG Base64：只有开启「同步图片」时后端才会填充 */
+  image?: string | null;
   createdAt: number;
   copyCount: number;
 }
@@ -108,6 +126,7 @@ function defaultConfig(): SyncConfig {
     cursor: 0,
     pushedUpTo: 0,
     deviceName: isMacOS ? "Mac" : "PC",
+    syncImages: false,
     lastSyncAt: 0,
     lastError: "",
     lastPulled: 0,
@@ -120,7 +139,32 @@ export function loadConfig(): SyncConfig {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return defaultConfig();
     const parsed = JSON.parse(raw) as Partial<SyncConfig>;
-    return { ...defaultConfig(), ...parsed };
+    const merged = { ...defaultConfig(), ...parsed };
+
+    // 旧版本可能把空中继存进了配置；新安装包已注入默认地址时就补上，
+    // 否则升级后仍会一直提示"同步服务未配置"。
+    if (!merged.relay && DEFAULT_RELAY) {
+      merged.relay = DEFAULT_RELAY;
+    }
+
+    const normalized = merged.code ? normalizeCode(merged.code) : "";
+    if (merged.code && !normalized) {
+      // 配置里的码既不是 6 位数字也不是旧版长码：当作没建过房间，让用户重新加入
+      merged.code = "";
+      merged.enabled = false;
+      merged.cursor = 0;
+    } else if (normalized && normalized !== merged.code) {
+      // 旧版长码平滑迁移成 6 位数字：房间随之改变，游标与水位必须归零重来
+      merged.code = normalized;
+      merged.cursor = 0;
+      merged.pushedUpTo = Date.now() - INITIAL_BACKFILL_MS;
+      try {
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+      } catch {
+        // 写不进去就只在本次会话使用迁移后的值
+      }
+    }
+    return merged;
   } catch {
     // localStorage 不可用时退化为"未启用"，不影响应用其他功能
     return defaultConfig();
@@ -146,22 +190,14 @@ export function subscribeConfig(listener: (config: SyncConfig) => void): () => v
 
 // ── 同步码 ────────────────────────────────────────────────────
 
-function base32Encode(bytes: Uint8Array): string {
-  let bits = 0;
-  let value = 0;
-  let out = "";
+/** FNV-1a：旧版长码迁移成 6 位数字时用的稳定哈希，两台设备算出的结果一致。 */
+function fnv1a(bytes: Uint8Array): number {
+  let hash = 0x811c9dc5;
   for (const byte of bytes) {
-    value = (value << 8) | byte;
-    bits += 8;
-    while (bits >= 5) {
-      out += B32_ALPHABET[(value >>> (bits - 5)) & 31];
-      bits -= 5;
-    }
+    hash ^= byte;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
   }
-  if (bits > 0) {
-    out += B32_ALPHABET[(value << (5 - bits)) & 31];
-  }
-  return out;
+  return hash;
 }
 
 function base32Decode(text: string): Uint8Array {
@@ -181,25 +217,33 @@ function base32Decode(text: string): Uint8Array {
   return new Uint8Array(out);
 }
 
-/** 生成新的同步码：32 字节随机 → base32 → 按 4 位分组，方便人眼抄写。 */
+/** 生成新的同步码：6 位数字，带前导零（000123 也是合法同步码）。 */
 export function generateCode(): string {
-  const master = crypto.getRandomValues(new Uint8Array(32));
-  const raw = base32Encode(master);
-  const groups = raw.match(/.{1,4}/g) ?? [];
-  return `XP1-${groups.join("-")}`;
+  const buffer = crypto.getRandomValues(new Uint32Array(1));
+  return String(buffer[0] % 10 ** CODE_LENGTH).padStart(CODE_LENGTH, "0");
 }
 
-/** 归一化用户粘贴的同步码；格式不对返回 null。 */
+/**
+ * 归一化用户输入的同步码；格式不对返回 null。
+ *
+ * 兼容旧版 XP1- 长码：按原主密钥算出 6 位数字，这样两台老设备升级后
+ * 即使各自迁移，也仍然落在同一个房间。
+ */
 export function normalizeCode(input: string): string | null {
-  const cleaned = input
-    .toUpperCase()
-    .replace(/^XP1-?/, "")
-    .replace(/[^A-Z2-7]/g, "");
-  if (cleaned.length === 0) return null;
-  const bytes = base32Decode(cleaned);
-  if (bytes.length !== 32) return null;
-  const groups = cleaned.match(/.{1,4}/g) ?? [];
-  return `XP1-${groups.join("-")}`;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  const legacyBody = trimmed.replace(/^XP1-?/i, "").replace(/[^A-Za-z2-7]/g, "");
+  const looksLegacy = /^XP1/i.test(trimmed) || (/[A-Za-z]/.test(trimmed) && legacyBody.length >= 16);
+  if (looksLegacy) {
+    const master = base32Decode(legacyBody.toUpperCase());
+    if (master.length !== 32) return null;
+    return String(fnv1a(master) % 10 ** CODE_LENGTH).padStart(CODE_LENGTH, "0");
+  }
+
+  // 手输时允许带空格 / 连字符，例如「123 456」「123-456」
+  const digits = trimmed.replace(/\D/g, "");
+  return digits.length === CODE_LENGTH ? digits : null;
 }
 
 // ── 密钥推导与加解密 ──────────────────────────────────────────
@@ -221,12 +265,47 @@ function fromBase64(text: string): Uint8Array {
   return out;
 }
 
-async function deriveKeys(code: string): Promise<Keys> {
-  const cleaned = code.toUpperCase().replace(/^XP1-?/, "").replace(/[^A-Z2-7]/g, "");
-  const master = base32Decode(cleaned);
-  if (master.length !== 32) {
-    throw new Error("同步码无效");
+/**
+ * 密钥派生结果缓存：PBKDF2 迭代 12 万次，每次同步都重算会明显卡顿，
+ * 而同步码在一次会话里不会变，缓存命中后只是一次 Map 查询。
+ */
+const keyCache = new Map<string, Promise<Keys>>();
+
+function deriveKeys(code: string): Promise<Keys> {
+  const cached = keyCache.get(code);
+  if (cached) return cached;
+  const task = deriveKeysUncached(code);
+  keyCache.set(code, task);
+  // 派生失败不留下坏缓存，下次还能重试
+  task.catch(() => keyCache.delete(code));
+  return task;
+}
+
+async function deriveKeysUncached(code: string): Promise<Keys> {
+  if (!/^\d{6}$/.test(code)) {
+    throw new Error("同步码无效，应为 6 位数字");
   }
+
+  // 6 位数字空间有限：先 PBKDF2 拉伸，再交给 HKDF 分出房间号、内容密钥与鉴权凭证
+  const material = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(`xpaste-code-v2:${code}`),
+    "PBKDF2",
+    false,
+    ["deriveBits"]
+  );
+  const master = new Uint8Array(
+    await crypto.subtle.deriveBits(
+      {
+        name: "PBKDF2",
+        hash: "SHA-256",
+        salt: enc.encode("xpaste-salt-v2"),
+        iterations: CODE_ITERATIONS
+      },
+      material,
+      256
+    )
+  );
 
   const base = await crypto.subtle.importKey("raw", master, "HKDF", false, [
     "deriveBits",
@@ -289,6 +368,7 @@ async function sealItem(keys: Keys, item: ExportedItem, deviceName: string) {
     html: item.html,
     color: item.color,
     filePath: item.filePath,
+    image: item.image ?? null,
     createdAt: item.createdAt,
     copyCount: item.copyCount,
     device: deviceName
@@ -321,6 +401,7 @@ async function openRecord(keys: Keys, record: RemoteRecord) {
     html?: string | null;
     color?: string | null;
     filePath?: string | null;
+    image?: string | null;
     createdAt?: number;
     copyCount?: number;
   };
@@ -331,6 +412,7 @@ async function openRecord(keys: Keys, record: RemoteRecord) {
     html: payload.html ?? null,
     color: payload.color ?? null,
     filePath: payload.filePath ?? null,
+    image: payload.image ?? null,
     createdAt: payload.createdAt ?? record.ts ?? Date.now(),
     copyCount: payload.copyCount ?? 1
   };
@@ -358,10 +440,13 @@ function endpoint(relay: string, path: string): string {
 async function request(
   relay: string,
   path: string,
-  init: { method: string; proof: string; body?: string }
+  init: { method: string; proof: string; body?: string; timeout?: number }
 ): Promise<any> {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), PULL_BATCH_TIMEOUT_MS);
+  const timer = window.setTimeout(
+    () => controller.abort(),
+    init.timeout ?? PULL_BATCH_TIMEOUT_MS
+  );
   try {
     const response = await fetch(endpoint(relay, path), {
       method: init.method,
@@ -422,29 +507,47 @@ export function subscribeStatus(listener: (value: SyncStatus) => void): () => vo
 async function pushOnce(config: SyncConfig, keys: Keys): Promise<number> {
   const batch = await invoke<ExportedItem[]>("sync_export_items", {
     sinceTs: config.pushedUpTo,
-    limit: PUSH_BATCH
+    limit: PUSH_BATCH,
+    includeImages: config.syncImages
   });
   if (batch.length === 0) return 0;
 
   const items = [];
+  let bytes = 0;
+  let watermark = config.pushedUpTo;
   for (const item of batch) {
-    // 图片是 RGBA 原始字节，一条动辄几 MB，第一版同步不搬图片。
-    if (item.format === "image") continue;
-    items.push(await sealItem(keys, item, config.deviceName));
+    // 图片默认不同步；开启后后端会先压到 1280px 再给 Base64，
+    // 体积仍然超限的图片会被丢弃（image 为空），这里一并跳过。
+    if (item.format === "image" && (!config.syncImages || !item.image)) {
+      watermark = item.createdAt;
+      continue;
+    }
+    const sealed = await sealItem(keys, item, config.deviceName);
+    // 单次请求设一个体积上限：图片再多也不至于把中继一次撑爆，
+    // 剩下的留到下一轮（水位只推进到真正处理过的这一条）。
+    if (items.length > 0 && bytes + sealed.ct.length > PUSH_MAX_BYTES) break;
+    items.push(sealed);
+    bytes += sealed.ct.length;
+    watermark = item.createdAt;
   }
 
-  // 水位永远推进到本批最后一条，哪怕这批全是图片。
-  // 否则遇到"连续 50 条图片"就会每 5 秒重复导出同一批，后面的文本永远推不上去。
-  const watermark = batch[batch.length - 1].createdAt;
-  saveConfig({ pushedUpTo: watermark });
-
-  if (items.length === 0) return 0;
+  // 一批全是不同步的图片时，水位也要往前走，否则会每 5 秒重复导出同一批
+  if (items.length === 0) {
+    if (watermark !== config.pushedUpTo) saveConfig({ pushedUpTo: watermark });
+    return 0;
+  }
 
   await request(config.relay, "/api/push", {
     method: "POST",
     proof: keys.proof,
-    body: JSON.stringify({ room: keys.roomId, items })
+    body: JSON.stringify({ room: keys.roomId, items }),
+    timeout: config.syncImages ? PUSH_BATCH_TIMEOUT_MS : PULL_BATCH_TIMEOUT_MS
   });
+
+  // 推送成功后再推进水位：失败时下一轮会原样重试，不会把内容悄悄丢掉
+  if (watermark !== config.pushedUpTo) {
+    saveConfig({ pushedUpTo: watermark });
+  }
 
   return items.length;
 }
@@ -484,7 +587,7 @@ export async function syncNow(): Promise<SyncStatus> {
   }
   // 没配中继时不要空转：直接给出可执行的提示，比 fetch 一个空 URL 报错清楚
   if (!config.relay) {
-    const message = "同步中继地址未配置（构建时未设置 VITE_XPASTE_RELAY）";
+    const message = "同步服务未配置：构建时没有注入中继地址（VITE_XPASTE_RELAY）";
     saveConfig({ lastError: message });
     setStatus({ busy: false, lastError: message });
     return status;
@@ -556,6 +659,24 @@ export function disableSync(): void {
   saveConfig({ enabled: false, lastError: "" });
 }
 
+/**
+ * 切换图片同步。
+ *
+ * 关闭时只改开关。开启时把水位往回拨 7 天：之前那些图片在"只同步文字"
+ * 阶段已经被水位跳过了，不回溯的话打开开关也永远补不上。
+ */
+export function setSyncImages(enabled: boolean): SyncConfig {
+  const current = loadConfig();
+  const pushedUpTo = enabled
+    ? Math.min(current.pushedUpTo, Date.now() - INITIAL_BACKFILL_MS)
+    : current.pushedUpTo;
+  const next = saveConfig({ syncImages: enabled, pushedUpTo });
+  if (enabled && next.enabled) {
+    void syncNow();
+  }
+  return next;
+}
+
 /** 换一个全新同步码：旧房间的数据不会跟过来，等于换了身份。 */
 export function rotateCode(): string {
   const code = generateCode();
@@ -578,7 +699,7 @@ export function startSync(): void {
   // 中继没配就别起轮询，省得每 5 秒白跑一次
   if (!config.relay) {
     stopSync();
-    setStatus({ lastError: "同步中继地址未配置（构建时未设置 VITE_XPASTE_RELAY）" });
+    setStatus({ lastError: "同步服务未配置：构建时没有注入中继地址（VITE_XPASTE_RELAY）" });
     return;
   }
   setStatus({ running: true });

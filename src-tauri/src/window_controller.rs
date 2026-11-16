@@ -441,7 +441,6 @@ fn popup_position(window: &tauri::WebviewWindow) -> (i32, i32) {
     (x.round() as i32, y.round() as i32)
 }
 
-#[cfg(not(target_os = "windows"))]
 fn positive_scale(scale: f64) -> f64 {
     if scale > 0.0 {
         scale

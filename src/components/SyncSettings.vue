@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { CopyDocument, Refresh, Warning } from "@element-plus/icons-vue";
 import {
@@ -9,6 +9,7 @@ import {
   loadConfig,
   normalizeCode,
   rotateCode,
+  setSyncImages,
   subscribeConfig,
   subscribeStatus,
   syncNow,
@@ -20,15 +21,21 @@ import {
  * 多设备同步面板。
  *
  * 交互只做三件事：开关、看/抄同步码、手动同步。同步码本身就是账号+密钥，
- * 所以界面上不出现"账号""密码"这类词——用户只需要知道抄走这串码，
- * 在另一台设备粘贴进去，两边就开始共享同一份历史。
+ * 所以界面上不出现"账号""密码"这类词——用户只需要知道抄走这 6 位数字，
+ * 在另一台设备输入进去，两边就开始共享同一份历史。
  */
 
 const config = ref<SyncConfig>(loadConfig());
 const status = ref<SyncStatus>(getStatus());
 const joinInput = ref("");
 const busy = ref(false);
-const revealing = ref(false);
+
+/** 输入时只留数字并自动按 3+3 分组，粘贴带空格的长码也不会被拒 */
+watch(joinInput, (value) => {
+  const digits = value.replace(/\D/g, "").slice(0, 6);
+  const formatted = digits.length > 3 ? `${digits.slice(0, 3)} ${digits.slice(3)}` : digits;
+  if (formatted !== value) joinInput.value = formatted;
+});
 
 let unsubscribeStatus: (() => void) | null = null;
 let unsubscribeConfig: (() => void) | null = null;
@@ -47,13 +54,15 @@ onBeforeUnmount(() => {
   unsubscribeConfig?.();
 });
 
-/** 同步码比较长，默认只露前 9 位，避免截屏时整串泄露 */
-const maskedCode = computed(() => {
+/** 6 位数字拆成 3+3 展示，口述和核对都更轻松 */
+const formattedCode = computed(() => {
   const code = config.value.code;
   if (!code) return "";
-  if (revealing.value) return code;
-  return `${code.slice(0, 9)}••••••••••••`;
+  return `${code.slice(0, 3)} ${code.slice(3)}`;
 });
+
+/** 中继地址只在构建时注入，缺了它就是截图里那条"同步异常" */
+const relayMissing = computed(() => !config.value.relay);
 
 const statusText = computed(() => {
   if (!config.value.enabled) return "未启用";
@@ -82,7 +91,7 @@ async function handleToggle(value: boolean) {
 async function handleJoin() {
   const normalized = normalizeCode(joinInput.value);
   if (!normalized) {
-    ElMessage.error("同步码格式不正确，应为 XP1- 开头的一串字符");
+    ElMessage.error("同步码应为 6 位数字，例如 123 456");
     return;
   }
   busy.value = true;
@@ -111,9 +120,15 @@ async function handleCopy() {
 function handleRotate() {
   const code = rotateCode();
   config.value = loadConfig();
-  revealing.value = true;
-  ElMessage.success("已生成新的同步码，旧设备需要用新码重新加入");
-  return code;
+  ElMessage.success(`已换成新同步码 ${code}，旧设备需要用新码重新加入`);
+}
+
+/** 图片同步开关：默认关闭，打开后回溯 7 天并立刻推一轮 */
+function handleImagesToggle(value: boolean) {
+  config.value = setSyncImages(value);
+  ElMessage.success(
+    value ? "已开启图片同步，会补推最近 7 天的图片" : "已关闭图片同步，只同步文字"
+  );
 }
 
 async function handleSyncNow() {
@@ -133,7 +148,7 @@ async function handleSyncNow() {
       <div class="settings-row-main">
         <div class="settings-row-label">多设备同步</div>
         <div class="settings-row-desc">
-          用同一串同步码在几台设备间共享剪贴板历史。内容在本机加密后才上传，
+          用同一个 6 位同步码在几台设备间共享剪贴板历史。内容在本机加密后才上传，
           中继服务看到的只有密文
         </div>
       </div>
@@ -147,16 +162,28 @@ async function handleSyncNow() {
         <div class="settings-row-main">
           <div class="settings-row-label">同步码</div>
           <div class="settings-row-desc">
-            等同于密码，换设备时抄过去即可；丢了只能换新的
+            6 位数字，等同于密码：在另一台设备输入即可；泄露后点「换新」重新生成
           </div>
         </div>
         <div class="settings-row-control">
-          <code class="sync-code">{{ maskedCode }}</code>
-          <el-button size="small" text @click="revealing = !revealing">
-            {{ revealing ? "隐藏" : "显示" }}
-          </el-button>
+          <code class="sync-code sync-code--short">{{ formattedCode }}</code>
           <el-button :icon="CopyDocument" size="small" @click="handleCopy">复制</el-button>
           <el-button :icon="Refresh" size="small" @click="handleRotate">换新</el-button>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-main">
+          <div class="settings-row-label">同步图片</div>
+          <div class="settings-row-desc">
+            默认只同步文字。开启后图片会压缩到 1280px 再加密上传，流量和等待时间都会明显增加
+          </div>
+        </div>
+        <div class="settings-row-control">
+          <el-switch
+            :model-value="config.syncImages"
+            @update:model-value="handleImagesToggle(Boolean($event))"
+          />
         </div>
       </div>
 
@@ -176,18 +203,28 @@ async function handleSyncNow() {
       </div>
     </template>
 
+    <div v-if="relayMissing" class="settings-row">
+      <div class="settings-row-main">
+        <div class="settings-row-label">同步服务未配置</div>
+        <div class="settings-row-desc">
+          当前安装包没有注入中继地址，同步无法连接。请使用官方最新安装包，或自建中继后重新构建
+        </div>
+      </div>
+    </div>
+
     <div class="settings-row">
       <div class="settings-row-main">
         <div class="settings-row-label">在另一台设备加入</div>
         <div class="settings-row-desc">
-          在新设备上粘贴已有的同步码，它就会和历史合并到同一个房间
+          在新设备上输入这 6 位数字，它就会和历史合并到同一个房间
         </div>
       </div>
       <div class="settings-row-control">
         <el-input
           v-model="joinInput"
-          placeholder="XP1-XXXX-XXXX-…"
-          style="width: 260px"
+          placeholder="6 位数字，例如 123 456"
+          inputmode="numeric"
+          style="width: 180px"
           @keyup.enter="handleJoin"
         />
         <el-button type="primary" :loading="busy" @click="handleJoin">加入</el-button>
@@ -209,6 +246,14 @@ async function handleSyncNow() {
   font-size: 12px;
   letter-spacing: 0.4px;
   vertical-align: middle;
+}
+
+.sync-code--short {
+  max-width: none;
+  padding: 6px 14px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 2px;
 }
 
 .sync-warn {

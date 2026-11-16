@@ -8,8 +8,8 @@ use sqlx::SqlitePool;
 
 use crate::history_repository::HistoryFilter;
 use crate::models::{
-    encode_png, ClipboardItem, ClipboardItemRow, HistoryPage, HistoryPageQuery, NewClipboardItem,
-    SyncExportItem, SyncImportItem,
+    decode_sync_image, encode_png, ClipboardItem, ClipboardItemRow, HistoryPage, HistoryPageQuery,
+    NewClipboardItem, SyncExportItem, SyncImportItem,
 };
 use crate::{classify, db, history_repository};
 
@@ -313,9 +313,10 @@ impl ClipboardSdk {
         &self,
         since_ts: i64,
         limit: Option<i64>,
+        include_images: bool,
     ) -> Result<Vec<SyncExportItem>, String> {
         let limit = limit.unwrap_or(SYNC_BATCH).clamp(1, SYNC_BATCH);
-        db::sync_export_items(&self.pool, since_ts, limit)
+        db::sync_export_items(&self.pool, since_ts, limit, include_images)
             .await
             .map_err(database_error)
     }
@@ -327,7 +328,16 @@ impl ClipboardSdk {
             let Some(item) = sanitize_import(raw) else {
                 continue;
             };
-            if db::sync_insert_remote(&self.pool, &item)
+            // 图片在这里解码成 RGBA；解不开就当这条记录损坏，跳过而不是整轮失败
+            let image = if item.format == "image" {
+                match item.image.as_deref().and_then(decode_sync_image) {
+                    Some(decoded) => Some(decoded),
+                    None => continue,
+                }
+            } else {
+                None
+            };
+            if db::sync_insert_remote(&self.pool, &item, image)
                 .await
                 .map_err(database_error)?
             {
@@ -399,36 +409,47 @@ fn sanitize_import(mut item: SyncImportItem) -> Option<SyncImportItem> {
     item.format = item.format.trim().to_ascii_lowercase();
     item.category = item.category.trim().to_ascii_lowercase();
 
-    // 图片不做第一版同步，收到也丢弃，避免对端版本不一致时写进空图片记录。
+    // 图片必须带 PNG Base64；其它字段一律清空，避免写出"有格式没内容"的空记录。
     if item.format == "image" || item.category == "image" {
-        return None;
-    }
-    if item.format.is_empty() {
-        item.format = "text".to_string();
-    }
-    if item.category.is_empty() {
-        item.category = item.format.clone();
-    }
+        if item.image.as_deref().map(str::trim).unwrap_or("").is_empty() {
+            return None;
+        }
+        item.format = "image".to_string();
+        item.category = "image".to_string();
+        item.text = None;
+        item.html = None;
+        item.color = None;
+        item.file_path = None;
+    } else {
+        // 文字记录不会带图片，防止对端把大块 Base64 混进文本记录
+        item.image = None;
+        if item.format.is_empty() {
+            item.format = "text".to_string();
+        }
+        if item.category.is_empty() {
+            item.category = item.format.clone();
+        }
 
-    let has_content = item
-        .text
-        .as_deref()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false)
-        || item.html.is_some()
-        || item.color.is_some()
-        || item.file_path.is_some();
-    if !has_content {
-        return None;
-    }
+        let has_content = item
+            .text
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+            || item.html.is_some()
+            || item.color.is_some()
+            || item.file_path.is_some();
+        if !has_content {
+            return None;
+        }
 
-    let total = [item.text.as_ref(), item.html.as_ref(), item.file_path.as_ref()]
-        .into_iter()
-        .flatten()
-        .map(String::len)
-        .sum::<usize>();
-    if total > SYNC_MAX_TEXT_BYTES {
-        return None;
+        let total = [item.text.as_ref(), item.html.as_ref(), item.file_path.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(String::len)
+            .sum::<usize>();
+        if total > SYNC_MAX_TEXT_BYTES {
+            return None;
+        }
     }
 
     // 对端时钟可能不准：未来时间会让记录一直钉在列表顶部，归零则永远排在末尾。

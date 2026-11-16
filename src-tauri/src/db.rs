@@ -7,8 +7,13 @@ use sqlx::{
 
 use crate::models::{
     content_fingerprint, ClipboardItemRow, ClipboardItemSummaryRow, FavoriteSummaryRow,
-    NewClipboardItem, SyncExportItem, SyncImportItem,
+    NewClipboardItem, SyncExportItem, SyncExportRow, SyncImportItem,
 };
+
+/// 同步图片先压到 1280px 再编码：肉眼够用，体积又能压到中继可接受的范围。
+const SYNC_IMAGE_MAX_DIMENSION: u32 = 1280;
+/// 单张图片的 Base64 上限：超过就只同步文字，避免一次请求被中继直接拒绝。
+const SYNC_IMAGE_MAX_BASE64_BYTES: usize = 3 * 1024 * 1024;
 
 #[derive(sqlx::FromRow)]
 struct ClipboardMigrationRow {
@@ -587,18 +592,43 @@ pub async fn sync_export_items(
     pool: &SqlitePool,
     since_ts: i64,
     limit: i64,
+    include_images: bool,
 ) -> Result<Vec<SyncExportItem>, sqlx::Error> {
-    sqlx::query_as::<_, SyncExportItem>(
-        "SELECT id, format, category, text, html, color, file_path, created_at, copy_count
-         FROM clipboard_items
-         WHERE created_at > ?
-         ORDER BY created_at ASC, id ASC
-         LIMIT ?",
-    )
-    .bind(since_ts)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
+    // 不开图片同步时连 BLOB 都不读，避免一次导出把几十 MB 图片搬进内存
+    let rows = if include_images {
+        sqlx::query_as::<_, SyncExportRow>(
+            "SELECT id, format, category, text, html, color, file_path, created_at, copy_count,
+                    image, image_width, image_height
+             FROM clipboard_items
+             WHERE created_at > ?
+             ORDER BY created_at ASC, id ASC
+             LIMIT ?",
+        )
+        .bind(since_ts)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, SyncExportRow>(
+            "SELECT id, format, category, text, html, color, file_path, created_at, copy_count,
+                    NULL AS image, NULL AS image_width, NULL AS image_height
+             FROM clipboard_items
+             WHERE created_at > ?
+             ORDER BY created_at ASC, id ASC
+             LIMIT ?",
+        )
+        .bind(since_ts)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?
+    };
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            row.into_export_item(SYNC_IMAGE_MAX_DIMENSION, SYNC_IMAGE_MAX_BASE64_BYTES)
+        })
+        .collect())
 }
 
 /// 写入对端推来的记录。
@@ -609,6 +639,7 @@ pub async fn sync_export_items(
 pub async fn sync_insert_remote(
     pool: &SqlitePool,
     item: &SyncImportItem,
+    image: Option<(Vec<u8>, i64, i64)>,
 ) -> Result<bool, sqlx::Error> {
     let new_item = NewClipboardItem {
         format: item.format.clone(),
@@ -617,9 +648,9 @@ pub async fn sync_insert_remote(
         html: item.html.clone(),
         file_path: item.file_path.clone(),
         color: item.color.clone(),
-        image: None,
-        image_width: None,
-        image_height: None,
+        image: image.as_ref().map(|(bytes, _, _)| bytes.clone()),
+        image_width: image.as_ref().map(|(_, width, _)| *width),
+        image_height: image.as_ref().map(|(_, _, height)| *height),
         created_at: item.created_at,
     };
     let content_hash = content_fingerprint(&new_item);
@@ -629,7 +660,7 @@ pub async fn sync_insert_remote(
         "INSERT OR IGNORE INTO clipboard_items (
            format, category, text, html, file_path, color, image,
            image_width, image_height, created_at, copy_count, content_hash
-         ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)",
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&new_item.format)
     .bind(&new_item.category)
@@ -637,6 +668,9 @@ pub async fn sync_insert_remote(
     .bind(&new_item.html)
     .bind(&new_item.file_path)
     .bind(&new_item.color)
+    .bind(&new_item.image)
+    .bind(new_item.image_width)
+    .bind(new_item.image_height)
     .bind(new_item.created_at)
     .bind(copy_count)
     .bind(&content_hash)

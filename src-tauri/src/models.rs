@@ -183,9 +183,8 @@ fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
 
 /// 多设备同步：导出给对端的一条记录。
 ///
-/// 只带文本类字段——图片是 RGBA 原始字节，动辄几 MB，塞进密文中继既慢又贵，
-/// 第一版同步先不覆盖图片。
-#[derive(Debug, Clone, Serialize, FromRow)]
+/// 图片默认不同步；开启后由后端压到 1280px 并编码成 PNG Base64 放进 `image`。
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncExportItem {
     pub id: i64,
@@ -195,8 +194,57 @@ pub struct SyncExportItem {
     pub html: Option<String>,
     pub color: Option<String>,
     pub file_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
     pub created_at: i64,
     pub copy_count: i64,
+}
+
+/// 同步导出查询行：比 SyncExportItem 多带原始 RGBA 字节，编码成 PNG 后即丢弃。
+#[derive(Debug, Clone, FromRow)]
+pub struct SyncExportRow {
+    pub id: i64,
+    pub format: String,
+    pub category: String,
+    pub text: Option<String>,
+    pub html: Option<String>,
+    pub color: Option<String>,
+    pub file_path: Option<String>,
+    pub image: Option<Vec<u8>>,
+    pub image_width: Option<i64>,
+    pub image_height: Option<i64>,
+    pub created_at: i64,
+    pub copy_count: i64,
+}
+
+impl SyncExportRow {
+    /// 转成对端可读的导出记录；图片按需压缩编码，体积超限的直接放弃图片。
+    pub fn into_export_item(self, max_dimension: u32, max_base64_bytes: usize) -> SyncExportItem {
+        let image = if self.format == "image" {
+            match (self.image, self.image_width, self.image_height) {
+                (Some(bytes), Some(width), Some(height)) => {
+                    encode_png_bytes(bytes, width, height, Some(max_dimension))
+                        .filter(|encoded| encoded.len() <= max_base64_bytes)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        SyncExportItem {
+            id: self.id,
+            format: self.format,
+            category: self.category,
+            text: self.text,
+            html: self.html,
+            color: self.color,
+            file_path: self.file_path,
+            image,
+            created_at: self.created_at,
+            copy_count: self.copy_count,
+        }
+    }
 }
 
 /// 对端推过来的一条记录，由前端解密后投递。
@@ -213,15 +261,27 @@ pub struct SyncImportItem {
     pub color: Option<String>,
     #[serde(default)]
     pub file_path: Option<String>,
+    /// 图片的 PNG Base64，仅在 format = "image" 时使用
+    #[serde(default)]
+    pub image: Option<String>,
     pub created_at: i64,
     #[serde(default)]
     pub copy_count: Option<i64>,
 }
 
 pub fn encode_png(row: ClipboardItemRow, max_dimension: Option<u32>) -> Option<String> {
-    let bytes = row.image?;
-    let width: u32 = row.image_width?.try_into().ok()?;
-    let height: u32 = row.image_height?.try_into().ok()?;
+    encode_png_bytes(row.image?, row.image_width?, row.image_height?, max_dimension)
+}
+
+/// RGBA 原始字节 → PNG Base64；可指定最长边，超过就先等比缩小。
+pub fn encode_png_bytes(
+    bytes: Vec<u8>,
+    width: i64,
+    height: i64,
+    max_dimension: Option<u32>,
+) -> Option<String> {
+    let width: u32 = width.try_into().ok()?;
+    let height: u32 = height.try_into().ok()?;
     let rgba = image::RgbaImage::from_raw(width, height, bytes)?;
     let mut dynamic = image::DynamicImage::ImageRgba8(rgba);
     if let Some(max_dimension) = max_dimension {
@@ -235,4 +295,27 @@ pub fn encode_png(row: ClipboardItemRow, max_dimension: Option<u32>) -> Option<S
         return None;
     }
     Some(base64::engine::general_purpose::STANDARD.encode(buffer))
+}
+
+/// 同步接收：PNG Base64 → RGBA 原始字节与尺寸。
+///
+/// 和 `save_png_base64` 用同一套解码限制，避免对端塞进来一张超大图把内存打爆。
+pub fn decode_sync_image(encoded: &str) -> Option<(Vec<u8>, i64, i64)> {
+    const MAX_ENCODED_BYTES: usize = 8 * 1024 * 1024;
+    const MAX_ALLOC_BYTES: u64 = 64 * 1024 * 1024;
+
+    let trimmed = encoded.trim();
+    if trimmed.is_empty() || trimmed.len() > MAX_ENCODED_BYTES {
+        return None;
+    }
+    let png = base64::engine::general_purpose::STANDARD.decode(trimmed).ok()?;
+    let mut reader = image::ImageReader::new(Cursor::new(png)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(MAX_ALLOC_BYTES);
+    reader.limits(limits);
+    let rgba = reader.decode().ok()?.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Some((rgba.into_raw(), i64::from(width), i64::from(height)))
 }

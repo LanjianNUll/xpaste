@@ -1,5 +1,8 @@
 <template>
   <div class="editor-shell">
+    <!-- 与主窗口、快捷面板共用同一套皮肤与背景粒子 -->
+    <AmbientLayer />
+
     <!-- 无边框窗口：这条顶栏同时是拖拽区，点空白处可以挪窗口 -->
     <div class="editor-bar" data-tauri-drag-region>
       <span class="editor-title" data-tauri-drag-region>编辑器</span>
@@ -18,16 +21,28 @@
       </button>
     </div>
 
+    <!-- 来源图例：插进来的内容带底色，一眼能看出哪些是挑来的、哪些是自己写的 -->
+    <div v-if="hasChips" class="editor-legend">
+      <span class="legend-item"><i class="legend-dot legend-dot--panel"></i>面板选中</span>
+      <span class="legend-item"><i class="legend-dot legend-dot--history"></i>历史插入</span>
+      <span class="legend-note">改动后自动合并为普通文字</span>
+    </div>
+
     <div class="editor-body">
       <div class="editor-main">
-        <textarea
-          ref="textareaRef"
-          v-model="draft"
-          class="editor-textarea"
+        <div
+          ref="editorRef"
+          class="editor-area"
+          contenteditable="true"
           spellcheck="false"
-          placeholder="点左侧面板或右侧历史里的任一条，内容会插到光标这里；也可以直接写。⌘↵ 粘贴到当前应用。"
+          role="textbox"
+          aria-multiline="true"
+          :data-placeholder="placeholder"
+          :data-empty="!hasContent"
           @input="handleInput"
-        ></textarea>
+          @paste="handlePaste"
+          @drop="handleDrop"
+        ></div>
 
         <div class="editor-actions">
           <button type="button" class="editor-primary" :disabled="pasting" @click="submit('paste')">
@@ -104,6 +119,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { Clock } from "@element-plus/icons-vue";
 import type { ClipboardItem } from "@/types";
+import AmbientLayer from "@/components/AmbientLayer.vue";
 import {
   closeEditor,
   copyText,
@@ -119,14 +135,33 @@ import {
 
 /** 与快捷面板共用同一个草稿：两个窗口来回切时内容不会断 */
 const DRAFT_KEY = "xpaste.composeDraft";
+/** 草稿的结构化副本：记录每段内容来自"面板"还是"历史"，重开窗口后高亮不丢 */
+const SEGMENTS_KEY = "xpaste.composeDraftSegments";
 /** 后端列表把 text 截到 4096 字符，到达这个长度就得回源取全文 */
 const TEXT_TRUNCATE_LIMIT = 4096;
 /** 侧栏一次取多少条：够翻一阵，又不至于把长文本全拉进内存 */
 const SIDEBAR_LIMIT = 60;
 
+/** 插入来源：面板选中与历史插入用不同底色区分 */
+type InsertSource = "panel" | "history";
+
+interface SavedSegment {
+  type: "text" | "chip";
+  text: string;
+  source?: InsertSource;
+  merged?: boolean;
+}
+
+const placeholder =
+  "点左侧面板或右侧历史里的任一条，内容会插到光标这里；也可以直接写。⌘↵ 粘贴到当前应用。";
+
 const draft = ref("");
 const pasting = ref(false);
-const textareaRef = ref<HTMLTextAreaElement | null>(null);
+/** 编辑区有没有内容：contenteditable 没有 v-model，占位符要自己控制 */
+const hasContent = ref(false);
+/** 是否还有未合并的高亮片段：有才显示图例，避免日常输入时占一行 */
+const hasChips = ref(false);
+const editorRef = ref<HTMLDivElement | null>(null);
 let unlistenInsert: (() => void) | null = null;
 let unlistenOpened: (() => void) | null = null;
 let unlistenSeed: (() => void) | null = null;
@@ -160,9 +195,39 @@ const formatLabel: Record<ClipboardItem["format"], string> = {
   color: "颜色"
 };
 
+/** 把编辑区的 DOM 拆成可持久化的段落：文字一段、每个高亮片段一段。 */
+function serializeEditor(): SavedSegment[] {
+  const editor = editorRef.value;
+  if (!editor) return [];
+  const segments: SavedSegment[] = [];
+  editor.childNodes.forEach((node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent ?? "";
+      if (text) segments.push({ type: "text", text });
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const element = node as HTMLElement;
+    if (element.classList.contains("editor-chip")) {
+      segments.push({
+        type: "chip",
+        text: element.textContent ?? "",
+        source: element.dataset.source === "history" ? "history" : "panel",
+        merged: element.classList.contains("is-merged")
+      });
+      return;
+    }
+    // 兜底：浏览器插入的其它节点按纯文本收集，避免丢内容
+    const text = element.textContent ?? "";
+    if (text) segments.push({ type: "text", text });
+  });
+  return segments;
+}
+
 function persistDraft() {
   try {
     window.localStorage.setItem(DRAFT_KEY, draft.value);
+    window.localStorage.setItem(SEGMENTS_KEY, JSON.stringify(serializeEditor()));
   } catch {
     // 存不下不影响当前这次编辑
   }
@@ -176,9 +241,77 @@ function loadDraft() {
   }
 }
 
+/** 读取上次保存的段落；和纯文本对不上说明草稿在别处改过，按纯文本重建。 */
+function readSegments(): SavedSegment[] | null {
+  try {
+    const raw = window.localStorage.getItem(SEGMENTS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as SavedSegment[];
+    if (!Array.isArray(parsed)) return null;
+    const joined = parsed.map((segment) => segment.text ?? "").join("");
+    return joined === draft.value ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function createChip(text: string, source: InsertSource, merged = false): HTMLSpanElement {
+  const chip = document.createElement("span");
+  chip.className = `editor-chip editor-chip--${source}${merged ? " is-merged" : ""}`;
+  chip.dataset.origin = text;
+  chip.dataset.source = source;
+  chip.textContent = text;
+  return chip;
+}
+
+/** 把保存的段落还原成 DOM；没有结构化数据时退回一整段纯文本。 */
+function renderEditor() {
+  const editor = editorRef.value;
+  if (!editor) return;
+  editor.innerHTML = "";
+  const segments = readSegments();
+  if (segments) {
+    for (const segment of segments) {
+      if (!segment.text) continue;
+      if (segment.type === "chip") {
+        editor.appendChild(
+          createChip(segment.text, segment.source === "history" ? "history" : "panel", segment.merged)
+        );
+      } else {
+        editor.appendChild(document.createTextNode(segment.text));
+      }
+    }
+  } else if (draft.value) {
+    editor.appendChild(document.createTextNode(draft.value));
+  }
+  syncFromEditor();
+}
+
+/** 编辑器 → 数据：更新纯文本、空状态、图例显示，并持久化。 */
+function syncFromEditor() {
+  const editor = editorRef.value;
+  if (!editor) return;
+  draft.value = editor.textContent ?? "";
+  hasContent.value = draft.value.length > 0;
+  hasChips.value = editor.querySelector(".editor-chip:not(.is-merged)") != null;
+  persistDraft();
+}
+
+/** 内容被改动过的片段立即去掉底色，和后面的普通文字"合"在一起。 */
+function markEditedChips() {
+  const editor = editorRef.value;
+  if (!editor) return;
+  editor.querySelectorAll<HTMLElement>(".editor-chip:not(.is-merged)").forEach((chip) => {
+    if ((chip.textContent ?? "") !== (chip.dataset.origin ?? "")) {
+      chip.classList.add("is-merged");
+    }
+  });
+}
+
 /** 一敲键盘就当作"刚才没打算清空"，把两段确认复位 */
 function handleInput() {
-  persistDraft();
+  markEditedChips();
+  syncFromEditor();
   if (!clearing.value) return;
   clearing.value = false;
   if (clearTimer != null) {
@@ -187,13 +320,54 @@ function handleInput() {
   }
 }
 
+/** 当前光标范围；光标不在编辑区（比如刚点了侧栏）时落到末尾。 */
+function currentRange(): Range | null {
+  const editor = editorRef.value;
+  if (!editor) return null;
+  const selection = window.getSelection();
+  if (selection && selection.rangeCount > 0) {
+    const range = selection.getRangeAt(0);
+    if (editor.contains(range.commonAncestorContainer)) return range;
+  }
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  return range;
+}
+
+/** 在光标处插入一串节点，并把光标放到最后一个节点之后。 */
+function insertNodes(nodes: Node[]) {
+  const editor = editorRef.value;
+  if (!editor || nodes.length === 0) return;
+  const range = currentRange();
+  if (!range) return;
+  range.deleteContents();
+  const fragment = document.createDocumentFragment();
+  for (const node of nodes) fragment.appendChild(node);
+  const last = fragment.lastChild;
+  range.insertNode(fragment);
+  if (last) {
+    const caret = document.createRange();
+    caret.setStartAfter(last);
+    caret.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(caret);
+  }
+  syncFromEditor();
+}
+
 function focusAtEnd() {
   void nextTick(() => {
-    const element = textareaRef.value;
-    if (!element) return;
-    element.focus();
-    const end = draft.value.length;
-    element.setSelectionRange(end, end);
+    const editor = editorRef.value;
+    if (!editor) return;
+    editor.focus();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
   });
 }
 
@@ -201,35 +375,53 @@ function focusAtEnd() {
  * 在光标处插入一段素材。
  *
  * 前后各补一个换行（只在会粘到已有文字时才补）：连着插好几条时不会糊成一坨，
- * 用户想拆开也只需删掉空行。
+ * 用户想拆开也只需删掉空行。插入的内容先带来源底色，改动后自动去掉。
  */
-function insertText(text: string) {
+function insertText(text: string, source: InsertSource) {
   if (!text) return;
+  const editor = editorRef.value;
+  if (!editor) return;
   // 打开编辑器时已经默认带入了"选中的那条"，再点一次同一条不该变成两份
   if (draft.value.trim() === text.trim()) return;
-  const element = textareaRef.value;
-  const current = draft.value;
-  const start = element?.selectionStart ?? current.length;
-  const end = element?.selectionEnd ?? start;
-  const before = current.slice(0, start);
-  const after = current.slice(end);
-  const lead = before.length > 0 && !before.endsWith("\n") ? "\n" : "";
-  const tail = after.length > 0 && !after.startsWith("\n") ? "\n" : "";
-  const inserted = `${lead}${text}${tail}`;
 
-  draft.value = `${before}${inserted}${after}`;
-  persistDraft();
+  const range = currentRange();
+  if (!range) return;
+  const beforeRange = range.cloneRange();
+  beforeRange.selectNodeContents(editor);
+  beforeRange.setEnd(range.startContainer, range.startOffset);
+  const before = beforeRange.toString();
+  const afterRange = range.cloneRange();
+  afterRange.selectNodeContents(editor);
+  afterRange.setStart(range.endContainer, range.endOffset);
+  const after = afterRange.toString();
 
-  const caret = before.length + inserted.length;
-  // 焦点还在左侧面板上时不抢回来：用户会连着点好几条，每点一次抢一次焦点，
-  // 两个窗口会来回闪，手感很差。只在编辑器本来就是前台时才把光标放过去。
+  const nodes: Node[] = [];
+  if (before.length > 0 && !before.endsWith("\n")) nodes.push(document.createTextNode("\n"));
+  nodes.push(createChip(text, source));
+  if (after.length > 0 && !after.startsWith("\n")) nodes.push(document.createTextNode("\n"));
+
+  // 焦点不在编辑器时不要抢回来：用户会连着点好几条，抢焦点会让两个窗口来回闪
   const hadFocus = document.hasFocus();
-  void nextTick(() => {
-    const target = textareaRef.value;
-    if (!target) return;
-    target.setSelectionRange(caret, caret);
-    if (hadFocus) target.focus();
-  });
+  insertNodes(nodes);
+  if (hadFocus) editor.focus();
+}
+
+/** 插入纯文本（粘贴、回车换行都走这里，保证 DOM 里只有文本节点）。 */
+function insertPlainText(text: string) {
+  if (!text) return;
+  insertNodes([document.createTextNode(text)]);
+}
+
+function handlePaste(event: ClipboardEvent) {
+  event.preventDefault();
+  const text = event.clipboardData?.getData("text/plain") ?? "";
+  insertPlainText(text.replace(/\r\n/g, "\n"));
+}
+
+function handleDrop(event: DragEvent) {
+  event.preventDefault();
+  const text = event.dataTransfer?.getData("text/plain") ?? "";
+  insertPlainText(text.replace(/\r\n/g, "\n"));
 }
 
 /**
@@ -241,14 +433,17 @@ function insertText(text: string) {
 function applySeed(text: string) {
   if (!text) return;
   if (draft.value.trim().length > 0) return;
-  draft.value = text;
-  persistDraft();
+  const editor = editorRef.value;
+  if (!editor) return;
+  if (editor.childNodes.length > 0) return;
   // 只挪光标，不抢焦点：面板那边可能正在连着挑素材
-  void nextTick(() => {
-    const target = textareaRef.value;
-    if (!target) return;
-    target.setSelectionRange(text.length, text.length);
-  });
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  insertText(text, "panel");
 }
 
 // ── 右侧历史栏 ────────────────────────────────────────────────────────────
@@ -334,7 +529,7 @@ async function pickSidebarItem(item: ClipboardItem) {
     const inline = item.text ?? item.html ?? item.color ?? item.filePath ?? "";
     const text =
       inline.length >= TEXT_TRUNCATE_LIMIT ? await getItemText(item.id, "history") : inline;
-    insertText(text);
+    insertText(text, "history");
     pickedId.value = item.id;
     window.setTimeout(() => {
       if (pickedId.value === item.id) pickedId.value = -1;
@@ -345,6 +540,16 @@ async function pickSidebarItem(item: ClipboardItem) {
 }
 
 // ── 送出 ──────────────────────────────────────────────────────────────────
+
+/** 清空编辑区与持久化草稿：送出成功后调用，避免残留上一条的内容。 */
+function resetEditor() {
+  const editor = editorRef.value;
+  if (editor) editor.innerHTML = "";
+  draft.value = "";
+  hasContent.value = false;
+  hasChips.value = false;
+  persistDraft();
+}
 
 async function submit(action: "paste" | "copy" | "save") {
   if (pasting.value) return;
@@ -359,9 +564,8 @@ async function submit(action: "paste" | "copy" | "save") {
     if (action === "paste") {
       // 后端会把两个窗口一起收起，再把内容投递给原应用
       await pasteText(text);
-      // 送出去就算这一轮结束：留着草稿，下次打开编辑器就带不出选中的那条了
-      draft.value = "";
-      persistDraft();
+      // 送出去就算这一轮结束：清空草稿，下次打开编辑器就带不出选中的那条了
+      resetEditor();
     } else if (action === "copy") {
       await copyText(text);
       ElMessage.success("已复制到剪贴板");
@@ -398,8 +602,7 @@ function clearDraft() {
     clearTimer = null;
   }
   clearing.value = false;
-  draft.value = "";
-  persistDraft();
+  resetEditor();
   focusAtEnd();
 }
 
@@ -439,6 +642,16 @@ function handleKeydown(event: KeyboardEvent) {
   if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
     event.preventDefault();
     void submit("paste");
+    return;
+  }
+  // 普通回车 / Shift+回车：插纯文本换行，避免浏览器生成 <div>/<br> 破坏段落结构
+  if (event.key === "Enter" && !event.altKey) {
+    const editor = editorRef.value;
+    const target = event.target as Node | null;
+    if (editor && target && (target === editor || editor.contains(target))) {
+      event.preventDefault();
+      insertPlainText("\n");
+    }
   }
 }
 
@@ -446,8 +659,11 @@ onMounted(async () => {
   loadDraft();
   window.addEventListener("keydown", handleKeydown);
 
+  // onMounted 时模板已挂载，直接按保存的段落还原（contenteditable 不能靠 v-model）
+  renderEditor();
+
   try {
-    unlistenInsert = await subscribeEditorInsert((text) => insertText(text));
+    unlistenInsert = await subscribeEditorInsert((text) => insertText(text, "panel"));
     unlistenSeed = await subscribeEditorSeed((text) => applySeed(text));
     unlistenOpened = await subscribeEditorOpened(() => {
       // 每次打开都回到"侧栏收起"的默认态；窗口宽度后端已经设回 420 了
@@ -566,23 +782,94 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 
-.editor-textarea {
+/*
+ * 编辑区用 contenteditable 而不是 textarea：只有 DOM 才能给"挑来的素材"
+ * 单独加底色，textarea 里的文字只能同一种颜色。
+ */
+.editor-area {
+  position: relative;
   flex: 1;
   min-height: 0;
-  width: 100%;
   padding: 12px 14px;
-  border: 0;
+  overflow-y: auto;
   outline: none;
-  resize: none;
-  background: transparent;
   color: var(--text);
   font: inherit;
   font-size: 13px;
   line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  cursor: text;
 }
 
-.editor-textarea::placeholder {
+.editor-area[data-empty="true"]::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  left: 14px;
   color: var(--muted);
+  white-space: normal;
+  pointer-events: none;
+}
+
+/* 面板选中：主色底；历史插入：琥珀色底。换行时每一行都带上标识 */
+.editor-chip {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+
+.editor-chip--history {
+  background: color-mix(in srgb, var(--el-color-warning) 18%, transparent);
+  box-shadow: inset 2px 0 0 var(--el-color-warning);
+}
+
+/* 一旦改动过就褪去底色，和用户自己写的文字合为一体 */
+.editor-chip.is-merged {
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.editor-legend {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 10px;
+  height: 22px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--stroke);
+  background: var(--panel-subtle);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.legend-dot--history {
+  background: var(--el-color-warning);
+}
+
+.legend-note {
+  margin-left: auto;
+  white-space: nowrap;
 }
 
 .editor-actions {
