@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
-import { CopyDocument, Refresh, Search, Warning } from "@element-plus/icons-vue";
+import { ArrowDown, CopyDocument, Refresh, Search, Warning } from "@element-plus/icons-vue";
 import {
   addManualPeer,
   disableSync,
@@ -43,6 +43,8 @@ const peerBusy = ref(false);
 const diagBusy = ref(false);
 const localAddrs = ref<string[]>([]);
 const diagnosisText = ref("");
+/** 高级设置默认收起：第一屏只保留开关、状态、同步码与加入 */
+const advancedOpen = ref(false);
 
 /** 输入时只留数字并自动按 3+3 分组，粘贴带空格的长码也不会被拒 */
 watch(joinInput, (value) => {
@@ -84,6 +86,15 @@ const relayMissing = computed(() => !config.value.relay);
 /** 当前实际走的是哪条通道：手动开了局域网，或者压根没有中继可用 */
 const lanMode = computed(() => config.value.lanOnly || !config.value.relay);
 
+/** 高级项被动过就挂个提示，避免折叠后忘了里面改过什么 */
+const advancedDirty = computed(
+  () =>
+    config.value.lanOnly ||
+    config.value.syncImages ||
+    config.value.mode !== "both" ||
+    (config.value.manualPeers?.length ?? 0) > 0
+);
+
 /** 方向前缀：单向模式一定要在状态里写明，否则用户会以为双向都在跑 */
 const modeLabel = computed(() => {
   if (config.value.mode === "send") return "仅发送";
@@ -117,7 +128,7 @@ const statusText = computed(() => {
 
   if (lanMode.value) {
     if (status.value.lanPeers === 0) {
-      return "局域网内还没有发现同房间设备：确认两台连的是同一个 Wi-Fi 且同步码一致；自动发现不生效时用下面「手动添加设备」填对方 IP";
+      return "还没发现同房间设备：确认两台连的是同一个 Wi-Fi、同步码一致；自动发现不生效时，到「高级设置」里手动填对方 IP";
     }
     const base = `已发现 ${peerLabel.value}`;
     // 探测通了才算真连上；只看到广播、TCP 连不上时把原因摆出来
@@ -201,7 +212,7 @@ async function handleDiagnose() {
       return;
     }
     if (result.peers.length === 0) {
-      diagnosisText.value = `端口正常（TCP ${result.servicePort} / UDP ${result.discoveryPort}），但没收到任何设备的广播：两台可能不在同一网段，或被路由器隔离。用下面的「手动添加设备」填对方 IP（本机 ${localAddrsText.value}）；macOS 还要在 系统设置 → 隐私与安全性 → 本地网络 里允许 Xpaste，Windows 首次运行要允许防火墙访问`;
+      diagnosisText.value = `端口正常（TCP ${result.servicePort} / UDP ${result.discoveryPort}），但没收到任何设备的广播：两台可能不在同一网段，或被路由器隔离。到「高级设置」里手动添加对方 IP（本机 ${localAddrsText.value}）；macOS 还要在 系统设置 → 隐私与安全性 → 本地网络 里允许 Xpaste，Windows 首次运行要允许防火墙访问`;
       return;
     }
     const failed = result.peers.filter((peer) => !peer.ok);
@@ -220,7 +231,7 @@ async function handleDiagnose() {
 /** 把 Rust 抛上来的连接错误翻成能照着做的提示 */
 function explainReason(raw: string): string {
   const text = raw || "";
-  if (/refused|拒绝/i.test(text)) return "对方端口拒绝连接，对方可能没开「局域网直连」或防火墙拦了";
+  if (/refused|拒绝/i.test(text)) return "对方端口拒绝连接：那台设备可能没在运行、没开启同步，或被防火墙拦截";
   if (/timed? ?out|超时/i.test(text)) return "连接超时，多半是防火墙或路由器隔离";
   if (/unreachable|No route|网络不可达/i.test(text)) return "网络不可达，两台不在同一网段";
   if (/拒绝接收/.test(text)) return "被对方拒绝，两台的同步码不一致";
@@ -281,7 +292,7 @@ function handleRotate() {
 function handleLanToggle(value: boolean) {
   config.value = setLanOnly(value);
   ElMessage.success(
-    value ? "已切换为局域网直连，同一 Wi-Fi 下的设备会互相发现" : "已切回中继同步"
+    value ? "已切换为局域网直连，同一 Wi-Fi 下的设备会互相发现" : "已恢复中继同步，局域网通道继续并行可用"
   );
 }
 
@@ -332,118 +343,7 @@ async function handleSyncNow() {
     </div>
 
     <template v-if="config.enabled">
-      <div class="settings-row">
-        <div class="settings-row-main">
-          <div class="settings-row-label">同步码</div>
-          <div class="settings-row-desc">
-            6 位数字，等同于密码。每台设备首次开启时各自随机生成；在另一台输入这串数字即可配对，泄露后点「换新」重新生成
-          </div>
-          <div class="sync-self">本机：{{ config.deviceName }}</div>
-        </div>
-        <div class="settings-row-control">
-          <code class="sync-code sync-code--short">{{ formattedCode }}</code>
-          <el-button :icon="CopyDocument" size="small" @click="handleCopy">复制</el-button>
-          <el-button :icon="Refresh" size="small" @click="handleRotate">换新</el-button>
-        </div>
-      </div>
-
-      <div class="settings-row">
-        <div class="settings-row-main">
-          <div class="settings-row-label">局域网直连</div>
-          <div class="settings-row-desc">
-            不经过中继，只和同一个 Wi-Fi 下的设备互传。中继连不上时打开它，
-            发现设备后每 5 秒自动同步一次；状态里会区分「发现到」和「连得上」
-          </div>
-        </div>
-        <div class="settings-row-control">
-          <el-switch
-            :model-value="config.lanOnly"
-            @update:model-value="handleLanToggle(Boolean($event))"
-          />
-        </div>
-      </div>
-
-      <div v-if="lanMode" class="settings-row">
-        <div class="settings-row-main">
-          <div class="settings-row-label">手动添加设备</div>
-          <div class="settings-row-desc">
-            自动发现靠 UDP 广播，跨网段、Wi-Fi 开了隔离、公司 VLAN 里都可能收不到。
-            填对方 IP 就走纯 TCP 直连，不依赖广播；两台都填上最稳
-            <div class="sync-self">本机地址：{{ localAddrsText }}</div>
-            <div v-if="manualPeers.length" class="sync-peers">
-              <el-tag
-                v-for="peer in manualPeers"
-                :key="peer"
-                size="small"
-                closable
-                @close="handleRemovePeer(peer)"
-                >{{ peer }}</el-tag
-              >
-            </div>
-          </div>
-        </div>
-        <div class="settings-row-control">
-          <el-input
-            v-model="peerInput"
-            placeholder="192.168.1.8"
-            style="width: 160px"
-            @keyup.enter="handleAddPeer"
-          />
-          <el-button :loading="peerBusy" @click="handleAddPeer">添加</el-button>
-        </div>
-      </div>
-
-      <div v-if="lanMode" class="settings-row">
-        <div class="settings-row-main">
-          <div class="settings-row-label">网络诊断</div>
-          <div class="settings-row-desc">
-            {{
-              diagnosisText ||
-              "点「检查」逐项确认：端口有没有监听起来、房间有没有配上、每台邻居能不能握手"
-            }}
-          </div>
-        </div>
-        <div class="settings-row-control">
-          <el-button :icon="Search" :loading="diagBusy" @click="handleDiagnose">检查</el-button>
-        </div>
-      </div>
-
-      <div class="settings-row">
-        <div class="settings-row-main">
-          <div class="settings-row-label">同步方向</div>
-          <div class="settings-row-desc">
-            只发送时本机内容会传给其他设备，但不接收对方的；只接收反之。
-            单向期间不会推进另一侧的进度，切回双向会把攒下的内容补齐
-          </div>
-        </div>
-        <div class="settings-row-control">
-          <el-radio-group
-            :model-value="config.mode"
-            size="small"
-            @update:model-value="handleModeChange($event as SyncMode)"
-          >
-            <el-radio-button value="both">双向</el-radio-button>
-            <el-radio-button value="send">只发送</el-radio-button>
-            <el-radio-button value="receive">只接收</el-radio-button>
-          </el-radio-group>
-        </div>
-      </div>
-
-      <div class="settings-row">
-        <div class="settings-row-main">
-          <div class="settings-row-label">同步图片</div>
-          <div class="settings-row-desc">
-            默认只同步文字。开启后图片会压缩到 1280px 再加密上传，流量和等待时间都会明显增加
-          </div>
-        </div>
-        <div class="settings-row-control">
-          <el-switch
-            :model-value="config.syncImages"
-            @update:model-value="handleImagesToggle(Boolean($event))"
-          />
-        </div>
-      </div>
-
+      <!-- 第一屏只保留主线：状态、同步码；低频选项收进下方「高级设置」 -->
       <div class="settings-row">
         <div class="settings-row-main">
           <div class="settings-row-label">同步状态</div>
@@ -456,6 +356,21 @@ async function handleSyncNow() {
         </div>
         <div class="settings-row-control">
           <el-button :loading="busy || status.busy" @click="handleSyncNow">立即同步</el-button>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-main">
+          <div class="settings-row-label">同步码</div>
+          <div class="settings-row-desc">
+            6 位数字就是配对密码：在另一台设备输入同一串即可配对，泄露后点「换新」重新生成
+          </div>
+          <div class="sync-self">本机：{{ config.deviceName }}</div>
+        </div>
+        <div class="settings-row-control">
+          <code class="sync-code sync-code--short">{{ formattedCode }}</code>
+          <el-button :icon="CopyDocument" size="small" @click="handleCopy">复制</el-button>
+          <el-button :icon="Refresh" size="small" @click="handleRotate">换新</el-button>
         </div>
       </div>
     </template>
@@ -487,6 +402,130 @@ async function handleSyncNow() {
         <el-button type="primary" :loading="busy" @click="handleJoin">加入</el-button>
       </div>
     </div>
+
+    <!-- 低频选项收进折叠区：默认视图只保留开关、状态、同步码与加入 -->
+    <div
+      v-if="config.enabled"
+      class="settings-row sync-advanced-row"
+      @click="advancedOpen = !advancedOpen"
+    >
+      <div class="settings-row-main">
+        <div class="settings-row-label">
+          高级设置
+          <el-tag
+            v-if="advancedDirty"
+            size="small"
+            type="warning"
+            effect="plain"
+            class="sync-advanced-tag"
+          >
+            已自定义
+          </el-tag>
+        </div>
+        <div class="settings-row-desc">局域网直连、手动添加设备、网络诊断、同步方向与图片同步</div>
+      </div>
+      <div class="settings-row-control">
+        <el-button size="small" text>
+          {{ advancedOpen ? "收起" : "展开" }}
+          <el-icon class="sync-advanced-arrow" :class="{ 'is-open': advancedOpen }">
+            <ArrowDown />
+          </el-icon>
+        </el-button>
+      </div>
+    </div>
+
+    <template v-if="config.enabled && advancedOpen">
+      <div class="settings-row">
+        <div class="settings-row-main">
+          <div class="settings-row-label">局域网直连</div>
+          <div class="settings-row-desc">
+            同一 Wi-Fi 下直接互联，不经过公网中继；关闭时中继与局域网并行，哪条通都能同步
+          </div>
+        </div>
+        <div class="settings-row-control">
+          <el-switch
+            :model-value="config.lanOnly"
+            @update:model-value="handleLanToggle(Boolean($event))"
+          />
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-main">
+          <div class="settings-row-label">手动添加设备</div>
+          <div class="settings-row-desc">
+            自动发现收不到时，填对方 IP 走纯 TCP 直连；两台互填最稳
+            <div class="sync-self">本机地址：{{ localAddrsText }}</div>
+            <div v-if="manualPeers.length" class="sync-peers">
+              <el-tag
+                v-for="peer in manualPeers"
+                :key="peer"
+                size="small"
+                closable
+                @close="handleRemovePeer(peer)"
+                >{{ peer }}</el-tag
+              >
+            </div>
+          </div>
+        </div>
+        <div class="settings-row-control">
+          <el-input
+            v-model="peerInput"
+            placeholder="192.168.1.8"
+            style="width: 160px"
+            @keyup.enter="handleAddPeer"
+          />
+          <el-button :loading="peerBusy" @click="handleAddPeer">添加</el-button>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-main">
+          <div class="settings-row-label">网络诊断</div>
+          <div class="settings-row-desc">
+            {{ diagnosisText || "点「检查」逐项确认端口监听、房间配置与邻居握手" }}
+          </div>
+        </div>
+        <div class="settings-row-control">
+          <el-button :icon="Search" :loading="diagBusy" @click="handleDiagnose">检查</el-button>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-main">
+          <div class="settings-row-label">同步方向</div>
+          <div class="settings-row-desc">
+            只发送 / 只接收时，反方向的内容不会流动；切回双向会把攒下的内容补齐
+          </div>
+        </div>
+        <div class="settings-row-control">
+          <el-radio-group
+            :model-value="config.mode"
+            size="small"
+            @update:model-value="handleModeChange($event as SyncMode)"
+          >
+            <el-radio-button value="both">双向</el-radio-button>
+            <el-radio-button value="send">只发送</el-radio-button>
+            <el-radio-button value="receive">只接收</el-radio-button>
+          </el-radio-group>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-main">
+          <div class="settings-row-label">同步图片</div>
+          <div class="settings-row-desc">
+            图片压缩到 1280px 后加密上传，会明显增加流量和等待时间
+          </div>
+        </div>
+        <div class="settings-row-control">
+          <el-switch
+            :model-value="config.syncImages"
+            @update:model-value="handleImagesToggle(Boolean($event))"
+          />
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -532,5 +571,25 @@ async function handleSyncNow() {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 6px;
+}
+
+/* 高级设置折叠行：整行可点，箭头指示展开状态 */
+.sync-advanced-row {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sync-advanced-tag {
+  margin-left: 8px;
+  vertical-align: 1px;
+}
+
+.sync-advanced-arrow {
+  margin-left: 4px;
+  transition: transform 0.15s ease;
+}
+
+.sync-advanced-arrow.is-open {
+  transform: rotate(180deg);
 }
 </style>

@@ -30,14 +30,13 @@ import {
   showUpdateDialog,
   updateState
 } from "@/services/update";
-import { defaultHotkey, isMacOS } from "@/services/platform";
+import { defaultHotkey } from "@/services/platform";
 import HistoryManager from "@/components/HistoryManager.vue";
 import FavoritesView from "@/components/FavoritesView.vue";
 import LazyClipboardImage from "@/components/LazyClipboardImage.vue";
 import ImageViewer from "@/components/ImageViewer.vue";
 import SettingsShell from "@/components/SettingsShell.vue";
 import AmbientLayer from "@/components/AmbientLayer.vue";
-import TitleBarControls from "@/components/TitleBarControls.vue";
 import UpdateDialog from "@/components/UpdateDialog.vue";
 import { startSync, stopSync } from "@/services/sync";
 
@@ -154,6 +153,7 @@ async function loadHistory() {
       selectedId.value = data[0].id;
     }
   } catch (err) {
+    console.error("加载历史失败", err);
     ElMessage.error("加载历史失败，请稍后重试。");
   } finally {
     loading.value = false;
@@ -632,7 +632,6 @@ watch(customDate, () => {
               <Moon v-else />
             </el-icon>
           </button>
-          <TitleBarControls v-if="!isMacOS" />
         </div>
       </header>
 

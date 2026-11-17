@@ -748,7 +748,7 @@ let lastProbe: LanProbe[] = [];
 /** 把底层错误翻成用户能行动的说法 */
 function explainProbeError(raw: string): string {
   const text = raw || "";
-  if (/refused|拒绝/i.test(text)) return "对端端口拒绝连接，对方可能没开「局域网直连」或防火墙拦了";
+  if (/refused|拒绝/i.test(text)) return "对端端口拒绝连接：那台设备可能没在运行、没开启同步，或被防火墙拦截";
   if (/timed? ?out|超时/i.test(text)) return "连接超时，多半是防火墙或网络隔离（AP 隔离）";
   if (/unreachable|No route|网络不可达/i.test(text)) return "网络不可达，两台设备可能不在同一网段";
   if (/拒绝接收/.test(text)) return "被对端拒绝，两台的同步码可能不一致";
@@ -851,7 +851,12 @@ export async function lanDiagnose(): Promise<LanDiagnosis | null> {
  * 没有邻居时不推进水位——宁可下一轮重复导出，也不能让内容在"当时没人收"的
  * 情况下被悄悄标记成已发送。
  */
-async function lanRound(config: SyncConfig, keys: Keys, peers: LanPeer[]): Promise<void> {
+async function lanRound(
+  config: SyncConfig,
+  keys: Keys,
+  peers: LanPeer[],
+  base: { pulled?: number; pushed?: number; tolerant?: boolean } = {}
+): Promise<void> {
   const probes = await probePeers(peers);
   const unreachable = probes
     .filter((probe) => !probe.ok)
@@ -879,7 +884,7 @@ async function lanRound(config: SyncConfig, keys: Keys, peers: LanPeer[]): Promi
       if (accepted > 0) {
         pushed = items.length;
         if (watermark !== config.lanPushedUpTo) saveConfig({ lanPushedUpTo: watermark });
-      } else {
+      } else if (!base.tolerant) {
         // 一个设备都没收下：优先用探测到的具体原因，比"发出 0 条"有用得多
         const reason = await invoke<string>("lan_sync_error").catch(() => "");
         const detail = unreachable[0] || explainProbeError(reason) || "对端没有响应";
@@ -889,12 +894,14 @@ async function lanRound(config: SyncConfig, keys: Keys, peers: LanPeer[]): Promi
   }
 
   const now = Date.now();
-  saveConfig({ lastSyncAt: now, lastError: "", lastPulled: pulled, lastPushed: pushed });
+  const totalPulled = (base.pulled ?? 0) + pulled;
+  const totalPushed = (base.pushed ?? 0) + pushed;
+  saveConfig({ lastSyncAt: now, lastError: "", lastPulled: totalPulled, lastPushed: totalPushed });
   setStatus({
     busy: false,
     lastSyncAt: now,
-    lastPulled: pulled,
-    lastPushed: pushed,
+    lastPulled: totalPulled,
+    lastPushed: totalPushed,
     lastError: "",
     lanPeers: peers.length,
     lanPeerNames: peers.map((peer) => peer.device || "设备"),
@@ -903,8 +910,8 @@ async function lanRound(config: SyncConfig, keys: Keys, peers: LanPeer[]): Promi
   });
 }
 
-/** 走中继的一轮：建房间 → 推本地新增 → 拉对端更新。 */
-async function relayRound(config: SyncConfig, keys: Keys): Promise<void> {
+/** 走中继的一轮：建房间 → 推本地新增 → 拉对端更新。返回本轮收发条数。 */
+async function relayRound(config: SyncConfig, keys: Keys): Promise<{ pulled: number; pushed: number }> {
   await request(config.relay, "/api/room", {
     method: "POST",
     proof: keys.proof,
@@ -950,9 +957,10 @@ async function relayRound(config: SyncConfig, keys: Keys): Promise<void> {
     lanUnreachable: [],
     skipped
   });
+  return { pulled, pushed };
 }
 
-/** 跑一轮完整同步：默认走中继，被挡住且有邻居时自动改走局域网。 */
+/** 跑一轮完整同步：中继与局域网并行，哪条通都能收发。 */
 export async function syncNow(): Promise<SyncStatus> {
   const config = loadConfig();
   if (!config.enabled || !config.code) {
@@ -971,19 +979,37 @@ export async function syncNow(): Promise<SyncStatus> {
   setStatus({ busy: true });
   try {
     const keys = await deriveKeys(config.code);
-    // 开关关掉就真的不听不收：只在「局域网直连」打开（或压根没中继）时才拉监听
     const useRelay = !config.lanOnly && Boolean(config.relay);
 
+    // 无论走哪条通道，都先把局域网监听与邻居拉起来：
+    // 对端可能正从中继模式的设备手动直连过来，只有监听在，47832 才不是"拒绝连接"。
+    const peers = await lanPeersOf(config, keys).catch(() => [] as LanPeer[]);
+
     if (!useRelay) {
-      const peers = await lanPeersOf(config, keys).catch(() => [] as LanPeer[]);
       await lanRound(config, keys, peers);
     } else {
       try {
-        await relayRound(config, keys);
+        const relay = await relayRound(config, keys);
+        // 邻居在场时局域网也并行跑一轮：对端可能只开了局域网，或它的中继正被网络挡住。
+        // 两条通道重复投递由入库时的内容指纹去重，不会产生重复记录。
+        if (peers.length > 0) {
+          try {
+            await lanRound(config, keys, peers, {
+              pulled: relay.pulled,
+              pushed: relay.pushed,
+              tolerant: true
+            });
+          } catch {
+            // 中继这轮已经成功，局域网的问题不该把整轮标成失败
+            setStatus({
+              lanPeers: peers.length,
+              lanPeerNames: peers.map((peer) => peer.device || "设备")
+            });
+          }
+        }
       } catch (error) {
         // 中继被网络环境挡住（WebView 只吐一句 Load failed）时不要直接放弃：
         // 局域网里如果有同房间设备，就改走直连，用户无感。
-        const peers = await lanPeersOf(config, keys).catch(() => [] as LanPeer[]);
         if (peers.length === 0) throw error;
         await lanRound(config, keys, peers);
       }
@@ -1132,12 +1158,9 @@ export function setLanOnly(enabled: boolean): SyncConfig {
     patch.lanPushedUpTo = floor;
   }
   const next = saveConfig(patch);
-  if (enabled) {
-    void syncNow();
-  } else {
-    void invoke("lan_sync_stop").catch(() => {});
-    void syncNow();
-  }
+  // 两种方向都保留局域网监听：关掉开关只是重新允许中继，
+  // 局域网仍作为并行通道工作，不能让对端的手动直连变成"拒绝连接"。
+  void syncNow();
   return next;
 }
 
