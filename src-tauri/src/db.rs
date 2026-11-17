@@ -6,8 +6,8 @@ use sqlx::{
 };
 
 use crate::models::{
-    content_fingerprint, ClipboardItemRow, ClipboardItemSummaryRow, FavoriteSummaryRow,
-    NewClipboardItem, SyncExportItem, SyncExportRow, SyncImportItem,
+    content_fingerprint, encode_png_data, ClipboardItemRow, ClipboardItemSummaryRow,
+    FavoriteSummaryRow, NewClipboardItem, SyncExportItem, SyncExportRow, SyncImportItem,
 };
 
 /// 同步图片先压到 1280px 再编码：肉眼够用，体积又能压到中继可接受的范围。
@@ -36,6 +36,8 @@ pub async fn init_db(db_path: &Path) -> Result<SqlitePool, sqlx::Error> {
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
+        // 启动时的图片压缩/清理会短暂持有写锁，给其它连接多留一点等待时间
+        .busy_timeout(std::time::Duration::from_secs(10))
         .pragma("temp_store", "FILE")
         .pragma("cache_size", "-2048")
         .pragma("wal_autocheckpoint", "500");
@@ -67,7 +69,6 @@ pub async fn init_db(db_path: &Path) -> Result<SqlitePool, sqlx::Error> {
     .execute(&pool)
     .await?;
     migrate_duplicate_records(&pool).await?;
-    migrate_source_device(&pool).await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_clipboard_items_created_at
          ON clipboard_items(created_at DESC)",
@@ -127,6 +128,9 @@ pub async fn init_db(db_path: &Path) -> Result<SqlitePool, sqlx::Error> {
     )
     .execute(&pool)
     .await?;
+
+    // 必须等两张表都建好再补列：全新库上对不存在的表 ALTER 会直接报错
+    migrate_source_device(&pool).await?;
 
     Ok(pool)
 }
@@ -714,4 +718,207 @@ pub async fn sync_insert_remote(
     .await?;
 
     Ok(result.rows_affected() > 0)
+}
+
+// ── 图片存储优化 ──────────────────────────────────────────────
+
+/// 历史图片的总预算。超过就从最老的图片开始删；收藏是用户主动留的，不在此列。
+const IMAGE_BUDGET_BYTES: i64 = 300 * 1024 * 1024;
+/// 旧图迁移时允许的最长边：超过就等比缩小，避免把超大截图继续放大存储。
+const IMAGE_MIGRATE_MAX_DIMENSION: u32 = 2560;
+/// PNG 文件头，用来判断一行图片是不是已经是压缩格式。
+const PNG_MAGIC_SQL: &str = "x'89504E470D0A1A0A'";
+
+/// 把历史图片控制到预算以内，返回删除的条数。
+///
+/// `SUM(length(image))` 只读 BLOB 长度，不搬内容，几百上千条也很快。
+pub async fn enforce_image_budget(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+    let mut deleted = 0_u64;
+    loop {
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(length(image)), 0) FROM clipboard_items WHERE image IS NOT NULL",
+        )
+        .fetch_one(pool)
+        .await?;
+        if total <= IMAGE_BUDGET_BYTES {
+            break;
+        }
+
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM clipboard_items
+             WHERE image IS NOT NULL
+             ORDER BY created_at ASC
+             LIMIT 5",
+        )
+        .fetch_all(pool)
+        .await?;
+        if ids.is_empty() {
+            break;
+        }
+        for id in ids {
+            sqlx::query("DELETE FROM clipboard_items WHERE id = ?")
+                .bind(id)
+                .execute(pool)
+                .await?;
+            deleted += 1;
+        }
+    }
+    Ok(deleted)
+}
+
+#[derive(Debug, Clone)]
+pub struct ImageStorageReport {
+    pub converted: u64,
+    pub deleted: u64,
+    pub size_before: u64,
+    pub size_after: u64,
+}
+
+/// 一次性整理图片存储：旧 RGBA 行压成 PNG，超预算的历史图片淘汰，最后 VACUUM 收缩文件。
+///
+/// 在应用启动后由后台任务调用，不阻塞窗口出现；读取方同时兼容新旧两种格式，
+/// 所以压缩过程中界面仍能正常展示图片。
+pub async fn optimize_image_storage(
+    pool: &SqlitePool,
+    db_path: &Path,
+) -> Result<ImageStorageReport, sqlx::Error> {
+    let size_before = std::fs::metadata(db_path).map(|meta| meta.len()).unwrap_or(0);
+    let converted = compress_legacy_images(pool).await?;
+    let deleted = enforce_image_budget(pool).await?;
+
+    let free_pages: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+        .fetch_one(pool)
+        .await?;
+    if converted > 0 || deleted > 0 || free_pages > 64 {
+        // VACUUM 需要独占：刚启动时通常没有别的读写，失败就留到下次启动再试
+        for attempt in 0..3 {
+            match sqlx::query("VACUUM").execute(pool).await {
+                Ok(_) => break,
+                Err(error) if attempt < 2 => {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    if attempt == 1 {
+                        eprintln!("vacuum retry failed: {error}");
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    let size_after = std::fs::metadata(db_path).map(|meta| meta.len()).unwrap_or(0);
+    Ok(ImageStorageReport {
+        converted,
+        deleted,
+        size_before,
+        size_after,
+    })
+}
+
+/// 把旧库里按 RGBA 存的图片逐批压成 PNG，返回转换条数。
+async fn compress_legacy_images(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+    let mut converted = 0_u64;
+    for table in ["clipboard_items", "favorites"] {
+        loop {
+            // 已经在 PNG 里的行直接跳过；SQLite 侧先过滤，避免把大 BLOB 全读出来
+            let rows = sqlx::query_as::<_, (i64, Vec<u8>, Option<i64>, Option<i64>)>(&format!(
+                "SELECT id, image, image_width, image_height FROM {table}
+                 WHERE image IS NOT NULL
+                   AND substr(image, 1, 8) <> {PNG_MAGIC_SQL}
+                 LIMIT 8"
+            ))
+            .fetch_all(pool)
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+
+            for (id, bytes, width, height) in rows {
+                let encoded = width
+                    .zip(height)
+                    .and_then(|(width, height)| {
+                        encode_png_data(
+                            bytes,
+                            width,
+                            height,
+                            Some(IMAGE_MIGRATE_MAX_DIMENSION),
+                        )
+                    });
+
+                match encoded {
+                    Some((png, width, height)) => {
+                        sqlx::query(&format!(
+                            "UPDATE {table} SET image = ?, image_width = ?, image_height = ? WHERE id = ?"
+                        ))
+                        .bind(png)
+                        .bind(width)
+                        .bind(height)
+                        .bind(id)
+                        .execute(pool)
+                        .await?;
+                        converted += 1;
+                    }
+                    None => {
+                        // 尺寸对不上的损坏记录：清掉 BLOB，别让迁移反复卡在同一行
+                        sqlx::query(&format!("UPDATE {table} SET image = NULL WHERE id = ?"))
+                            .bind(id)
+                            .execute(pool)
+                            .await?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(converted)
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    use crate::models::is_png_blob;
+
+    /// 旧 RGBA 图片应该在启动优化里被压成 PNG，且读取路径仍然可用。
+    #[test]
+    fn image_storage_migration() {
+        tauri::async_runtime::block_on(async {
+            let dir = std::env::temp_dir().join(format!("xpaste-db-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("创建临时目录");
+            let path = dir.join("clipboard.db");
+            let pool = init_db(&path).await.expect("初始化数据库");
+
+            let raw = vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+            ];
+            insert_or_increment_item(
+                &pool,
+                NewClipboardItem {
+                    format: "image".to_string(),
+                    category: "image".to_string(),
+                    text: None,
+                    html: None,
+                    file_path: None,
+                    color: None,
+                    image: Some(raw),
+                    image_width: Some(2),
+                    image_height: Some(2),
+                    created_at: 1,
+                },
+            )
+            .await
+            .expect("写入旧格式图片");
+
+            let report = optimize_image_storage(&pool, &path)
+                .await
+                .expect("迁移图片存储");
+            assert_eq!(report.converted, 1, "应转换一张旧图");
+
+            let blob: Vec<u8> = sqlx::query_scalar("SELECT image FROM clipboard_items LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .expect("读取迁移后的图片");
+            assert!(is_png_blob(&blob), "迁移后必须是 PNG");
+
+            pool.close().await;
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
 }

@@ -8,8 +8,8 @@ use sqlx::SqlitePool;
 
 use crate::history_repository::HistoryFilter;
 use crate::models::{
-    decode_sync_image, encode_png, ClipboardItem, ClipboardItemRow, HistoryPage, HistoryPageQuery,
-    NewClipboardItem, SyncExportItem, SyncImportItem,
+    decode_image_blob, decode_sync_image, encode_png, ClipboardItem, ClipboardItemRow, HistoryPage,
+    HistoryPageQuery, NewClipboardItem, SyncExportItem, SyncImportItem,
 };
 use crate::{classify, db, history_repository};
 
@@ -142,7 +142,7 @@ impl ClipboardSdk {
         if png.len() > MAX_IMAGE_BYTES {
             return Err("图片超过 20MB 限制".to_string());
         }
-        let mut reader = image::ImageReader::new(Cursor::new(png))
+        let mut reader = image::ImageReader::new(Cursor::new(&png))
             .with_guessed_format()
             .map_err(|_| "图片格式不受支持".to_string())?;
         let mut limits = image::Limits::default();
@@ -155,10 +155,11 @@ impl ClipboardSdk {
             .map_err(|_| "图片解码失败或占用内存过大".to_string())?
             .to_rgba8();
         let (width, height) = rgba.dimensions();
-        let bytes = rgba.into_raw();
-        if bytes.len() > MAX_IMAGE_BYTES {
+        if rgba.len() > MAX_IMAGE_BYTES {
             return Err("图片解码后超过 20MB 限制".to_string());
         }
+        // 直接存压缩后的 PNG：体积通常只有 RGBA 的 1/5～1/20，
+        // 读取时再按需解码（见 models::decode_image_blob）。
         self.save_if_new(NewClipboardItem {
             format: "image".to_string(),
             category: "image".to_string(),
@@ -166,7 +167,7 @@ impl ClipboardSdk {
             html: None,
             file_path: None,
             color: None,
-            image: Some(bytes),
+            image: Some(png),
             image_width: Some(i64::from(width)),
             image_height: Some(i64::from(height)),
             created_at: now_ms(),
@@ -176,9 +177,18 @@ impl ClipboardSdk {
     }
 
     pub async fn save_if_new(&self, item: NewClipboardItem) -> Result<bool, String> {
-        db::insert_or_increment_item(&self.pool, item)
+        let is_image = item.format == "image";
+        let saved = db::insert_or_increment_item(&self.pool, item)
             .await
-            .map_err(database_error)
+            .map_err(database_error)?;
+        if is_image {
+            // 图片很占空间：每次新增后检查预算，超了就从最老的图片开始删
+            if let Err(error) = db::enforce_image_budget(&self.pool).await {
+                // 清理失败不影响这次保存
+                eprintln!("image budget cleanup failed: {error}");
+            }
+        }
+        Ok(saved)
     }
 
     pub async fn image_base64(
@@ -192,12 +202,18 @@ impl ClipboardSdk {
             return Err("该记录不是图片".to_string());
         }
         let max_dimension = thumbnail.then_some(240);
-        encode_png(row, max_dimension).ok_or_else(|| "图片数据损坏".to_string())
+        let encoded = encode_png(
+            row.image.ok_or_else(|| "图片数据损坏".to_string())?,
+            row.image_width,
+            row.image_height,
+            max_dimension,
+        );
+        encoded.ok_or_else(|| "图片数据损坏".to_string())
     }
 
     pub async fn copy_item(&self, source: ItemSource, id: i64) -> Result<(), String> {
         let row = self.get_row(source, id).await?;
-        write_to_clipboard(row).map_err(|err| format!("写入剪贴板失败：{err}"))
+        write_to_clipboard(row)
     }
 
     /// 取一条记录的完整文本，供编辑器插入素材使用。
@@ -324,11 +340,13 @@ impl ClipboardSdk {
     /// 多设备同步：把对端记录写进本地库，返回真正新增的条数。
     pub async fn sync_import(&self, items: Vec<SyncImportItem>) -> Result<u64, String> {
         let mut inserted = 0_u64;
+        let mut images_inserted = false;
         for raw in items {
             let Some(item) = sanitize_import(raw) else {
                 continue;
             };
-            // 图片在这里解码成 RGBA；解不开就当这条记录损坏，跳过而不是整轮失败
+            let is_image = item.format == "image";
+            // 图片在这里校验 PNG 并取出尺寸；解不开就当这条记录损坏，跳过而不是整轮失败
             let image = if item.format == "image" {
                 match item.image.as_deref().and_then(decode_sync_image) {
                     Some(decoded) => Some(decoded),
@@ -342,6 +360,15 @@ impl ClipboardSdk {
                 .map_err(database_error)?
             {
                 inserted += 1;
+                if is_image {
+                    images_inserted = true;
+                }
+            }
+        }
+        if images_inserted {
+            // 同步进来的图片同样纳入预算，避免另一端把本机撑满
+            if let Err(error) = db::enforce_image_budget(&self.pool).await {
+                eprintln!("image budget cleanup failed after sync: {error}");
             }
         }
         Ok(inserted)
@@ -356,34 +383,43 @@ impl ClipboardSdk {
     }
 }
 
-fn write_to_clipboard(row: ClipboardItemRow) -> Result<(), arboard::Error> {
-    let mut clipboard = arboard::Clipboard::new()?;
+fn write_to_clipboard(row: ClipboardItemRow) -> Result<(), String> {
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|err| format!("打开剪贴板失败：{err}"))?;
     match row.format.as_str() {
         "image" => {
-            if let (Some(bytes), Some(width), Some(height)) =
-                (row.image, row.image_width, row.image_height)
-            {
-                clipboard.set_image(ImageData {
+            let bytes = row.image.ok_or_else(|| "图片数据损坏".to_string())?;
+            // 新库里是 PNG，旧库里是 RGBA：统一解成 RGBA 再交给系统剪贴板
+            let (rgba, width, height) = decode_image_blob(bytes, row.image_width, row.image_height)
+                .ok_or_else(|| "图片数据损坏".to_string())?;
+            clipboard
+                .set_image(ImageData {
                     width: width as usize,
                     height: height as usize,
-                    bytes: Cow::Owned(bytes),
-                })?;
-            }
+                    bytes: Cow::Owned(rgba),
+                })
+                .map_err(|err| format!("写入剪贴板失败：{err}"))?;
         }
         "html" => {
             if let Some(html) = row.html {
-                clipboard.set_html(html, row.text)?;
+                clipboard
+                    .set_html(html, row.text)
+                    .map_err(|err| format!("写入剪贴板失败：{err}"))?;
             }
         }
         // 文件/文件夹记录写回的就是完整路径：多选时一行一个路径。
         "file" => {
             if let Some(text) = row.text.or(row.file_path) {
-                clipboard.set_text(text)?;
+                clipboard
+                    .set_text(text)
+                    .map_err(|err| format!("写入剪贴板失败：{err}"))?;
             }
         }
         _ => {
             if let Some(text) = row.text.or(row.file_path).or(row.color) {
-                clipboard.set_text(text)?;
+                clipboard
+                    .set_text(text)
+                    .map_err(|err| format!("写入剪贴板失败：{err}"))?;
             }
         }
     }

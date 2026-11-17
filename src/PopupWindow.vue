@@ -252,6 +252,8 @@ async function loadHistory() {
       scrollActiveIntoView();
     }
   } catch (err) {
+    // 保留原始错误，设置页/控制台排查时能直接看到是哪条命令失败
+    console.error("加载历史失败", err);
     ElMessage.error("加载历史失败，请稍后重试。");
   } finally {
     if (requestId === loadRequestId) {

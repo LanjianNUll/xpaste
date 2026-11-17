@@ -30,7 +30,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     TranslateMessage, HWND_MESSAGE, MSG, WM_CLIPBOARDUPDATE, WNDCLASSW,
 };
 
-use crate::{classify, models::NewClipboardItem, sdk::ClipboardSdk};
+use crate::{
+    classify,
+    models::{encode_png_data, NewClipboardItem},
+    sdk::ClipboardSdk,
+};
 
 struct CapturedItem {
     item: NewClipboardItem,
@@ -252,6 +256,14 @@ fn capture_clipboard() -> Option<CapturedItem> {
             return None;
         }
         let hash = hash_image(&bytes, image.width, image.height);
+        // 剪贴板给的是 RGBA 原始字节，直接入库一张截图就要十几 MB；
+        // 先压成 PNG 再存，体积通常能降到 1/5～1/20（无画质损失）。
+        let Some((png, width, height)) =
+            encode_png_data(bytes, image.width as i64, image.height as i64, None)
+        else {
+            log_line("clipboard: image encode failed, skipping");
+            return None;
+        };
         let item = NewClipboardItem {
             format: "image".to_string(),
             category: "image".to_string(),
@@ -259,9 +271,9 @@ fn capture_clipboard() -> Option<CapturedItem> {
             html: None,
             file_path: None,
             color: None,
-            image: Some(bytes),
-            image_width: Some(image.width as i64),
-            image_height: Some(image.height as i64),
+            image: Some(png),
+            image_width: Some(width),
+            image_height: Some(height),
             created_at: now_ms(),
         };
         return Some(CapturedItem { item, hash });

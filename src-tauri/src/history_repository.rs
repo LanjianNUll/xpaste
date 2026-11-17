@@ -20,7 +20,7 @@ pub async fn query_page(
     let mut builder = QueryBuilder::<Sqlite>::new(
         "SELECT id, format, category, substr(text, 1, 4096) AS text, \
          substr(html, 1, 4096) AS html, file_path, color, \
-         image_width, image_height, created_at, copy_count, \
+         image_width, image_height, created_at, copy_count, source_device, \
          EXISTS(SELECT 1 FROM favorites f WHERE f.content_hash = clipboard_items.content_hash) \
            AS favorited \
          FROM clipboard_items WHERE 1 = 1",

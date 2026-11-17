@@ -850,10 +850,27 @@ fn main() {
             clipboard::init_logger(log_path);
             let db_path = app_data_dir.join("clipboard.db");
             let pool = tauri::async_runtime::block_on(db::init_db(&db_path))?;
+            let optimize_pool = pool.clone();
+            let optimize_path = db_path.clone();
             let sdk = ClipboardSdk::new(pool);
             app.manage(AppState { sdk: sdk.clone() });
             let handle = app.handle().clone();
             clipboard::start_watcher(handle.clone(), sdk);
+
+            // 图片从「RGBA 原始字节」升级为「PNG 压缩存储」：老库在后台压一遍并回收空间，
+            // 不阻塞窗口出现；新旧格式读取都兼容，压缩期间界面照常可用。
+            tauri::async_runtime::spawn(async move {
+                match db::optimize_image_storage(&optimize_pool, &optimize_path).await {
+                    Ok(report) => clipboard::log_line(&format!(
+                        "storage: image optimize done, converted={} deleted={} size={}MB->{}MB",
+                        report.converted,
+                        report.deleted,
+                        report.size_before / 1_048_576,
+                        report.size_after / 1_048_576
+                    )),
+                    Err(error) => clipboard::log_line(&format!("storage: image optimize failed: {error}")),
+                }
+            });
 
             // 首次运行时，默认开启自启动
             let first_run_flag = app_data_dir.join(".first_run");
