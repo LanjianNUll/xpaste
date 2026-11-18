@@ -857,19 +857,27 @@ fn main() {
             let handle = app.handle().clone();
             clipboard::start_watcher(handle.clone(), sdk);
 
-            // 图片从「RGBA 原始字节」升级为「PNG 压缩存储」：老库在后台压一遍并回收空间，
-            // 不阻塞窗口出现；新旧格式读取都兼容，压缩期间界面照常可用。
-            tauri::async_runtime::spawn(async move {
-                match db::optimize_image_storage(&optimize_pool, &optimize_path).await {
-                    Ok(report) => clipboard::log_line(&format!(
-                        "storage: image optimize done, converted={} deleted={} size={}MB->{}MB",
-                        report.converted,
-                        report.deleted,
-                        report.size_before / 1_048_576,
-                        report.size_after / 1_048_576
-                    )),
-                    Err(error) => clipboard::log_line(&format!("storage: image optimize failed: {error}")),
-                }
+            // 图片从「RGBA 原始字节」升级为「PNG 压缩存储」：老库在后台压一遍并回收空间。
+            //
+            // 注意放在独立线程里并延迟启动：PNG 编码是纯 CPU 活，跑在 tokio worker 上
+            // 会和命令处理抢线程，表现为窗口刚打开时点哪都没反应。延迟 12 秒让首屏
+            // 查询先跑完，之后再慢悠悠地压缩，用户基本感知不到。
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(12));
+                tauri::async_runtime::block_on(async move {
+                    match db::optimize_image_storage(&optimize_pool, &optimize_path).await {
+                        Ok(report) => clipboard::log_line(&format!(
+                            "storage: image optimize done, converted={} deleted={} size={}MB->{}MB",
+                            report.converted,
+                            report.deleted,
+                            report.size_before / 1_048_576,
+                            report.size_after / 1_048_576
+                        )),
+                        Err(error) => {
+                            clipboard::log_line(&format!("storage: image optimize failed: {error}"))
+                        }
+                    }
+                });
             });
 
             // 首次运行时，默认开启自启动

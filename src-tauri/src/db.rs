@@ -805,6 +805,13 @@ pub async fn optimize_image_storage(
         }
     }
 
+    // VACUUM 会写大量页，WAL 可能膨胀到上百 MB；截断一次，
+    // 否则下次启动 SQLite 还要恢复这么长的日志，表现为打开很慢。
+    let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .fetch_optional(pool)
+        .await;
+    let _ = sqlx::query("PRAGMA optimize").execute(pool).await;
+
     let size_after = std::fs::metadata(db_path).map(|meta| meta.len()).unwrap_or(0);
     Ok(ImageStorageReport {
         converted,
@@ -866,6 +873,8 @@ async fn compress_legacy_images(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
                     }
                 }
             }
+            // 一批压缩完让出 CPU：大库迁移时不要长时间占满一个核心，避免整机发卡
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
         }
     }
     Ok(converted)
